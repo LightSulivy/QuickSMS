@@ -160,7 +160,6 @@ async def on_ready():
 
 @tasks.loop(time=time(hour=10, minute=0))
 async def daily_stats_task():
-    # Calcul des stats sur les dernières 24h
     limit_date = (datetime.now() - timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
     
     conn = sqlite3.connect('database.db')
