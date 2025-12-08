@@ -16,6 +16,14 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 API_KEY = os.getenv("SMS_ACTIVATE_API_KEY")
 BASE_URL = "https://api.sms-activate.org/stubs/handler_api.php"
 
+# --- ADMINS ---
+ADMIN_IDS = [
+    227390137892339722, 
+    1300246463951011981,
+    1186309476626747422,
+    1279003722172862465
+]
+
 # --- MAPPING (Pour simplifier la vie de tes clients) ---
 # SMS-Activate utilise des IDs pour les pays et des codes pour les services.
 # Tu devras compléter cette liste selon ce que tu veux vendre.
@@ -152,8 +160,6 @@ async def on_ready():
 
 @tasks.loop(time=time(hour=10, minute=0))
 async def daily_stats_task():
-    allowed_ids = [227390137892339722, 1300246463951011981,1186309476626747422,1279003722172862465]
-    
     # Calcul des stats sur les dernières 24h
     limit_date = (datetime.now() - timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
     
@@ -181,7 +187,7 @@ async def daily_stats_task():
     embed.add_field(name="Bénéfice Net", value=f"{profit:.2f}€", inline=True)
     embed.set_footer(text=f"{len(rows)} commandes traitées.")
 
-    for admin_id in allowed_ids:
+    for admin_id in ADMIN_IDS:
         try:
             user = await bot.fetch_user(admin_id)
             if user:
@@ -191,8 +197,7 @@ async def daily_stats_task():
 
 @bot.tree.command(name="deposit", description="Ajouter des crédits (Admin uniquement)")
 async def deposit(interaction: discord.Interaction, amount: float, user: discord.Member):
-    allowed_ids = [227390137892339722, 1300246463951011981]
-    if interaction.user.id not in allowed_ids:
+    if interaction.user.id not in ADMIN_IDS:
         return await interaction.response.send_message("❌ Vous n'avez pas la permission d'utiliser cette commande.", ephemeral=True)
 
     update_balance(user.id, amount)
@@ -201,8 +206,7 @@ async def deposit(interaction: discord.Interaction, amount: float, user: discord
 
 @bot.tree.command(name="stats", description="Voir les bénéfices du jour (Admin uniquement)")
 async def stats(interaction: discord.Interaction):
-    allowed_ids = [227390137892339722, 1300246463951011981]
-    if interaction.user.id not in allowed_ids:
+    if interaction.user.id not in ADMIN_IDS:
         return await interaction.response.send_message("❌ Accès refusé.", ephemeral=True)
 
     today = datetime.now().strftime('%Y-%m-%d')
