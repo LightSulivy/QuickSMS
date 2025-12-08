@@ -5,7 +5,8 @@ import sqlite3
 import json
 import aiohttp
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta, time
+from discord.ext import tasks
 import os
 from dotenv import load_dotenv
 
@@ -50,6 +51,12 @@ def init_db():
     # Migration : Ajout colonne service si elle existe pas (pour les anciennes DB)
     try:
         c.execute("ALTER TABLE orders ADD COLUMN service TEXT")
+    except sqlite3.OperationalError:
+        pass # La colonne existe déjà
+
+    # Migration : Ajout colonne cost pour le calcul de bénéfice
+    try:
+        c.execute("ALTER TABLE orders ADD COLUMN cost REAL")
     except sqlite3.OperationalError:
         pass # La colonne existe déjà
 
@@ -139,7 +146,48 @@ sms_api = SMSClient()
 @bot.event
 async def on_ready():
     await bot.tree.sync()
+    if not daily_stats_task.is_running():
+        daily_stats_task.start()
     print(f"Bot connecté en tant que {bot.user}")
+
+@tasks.loop(time=time(hour=10, minute=0))
+async def daily_stats_task():
+    allowed_ids = [227390137892339722, 1300246463951011981]
+    
+    # Calcul des stats sur les dernières 24h
+    limit_date = (datetime.now() - timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
+    
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT order_id, price, cost FROM orders WHERE status='COMPLETED' AND created_at >= ?", (limit_date,))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    if not rows:
+        return # Pas de commande, pas de stats
+
+    total_sales = 0.0
+    total_cost = 0.0
+    
+    for _, price, cost in rows:
+        total_sales += price
+        if cost:
+            total_cost += (cost * 0.9)
+            
+    profit = total_sales - total_cost
+    
+    embed = discord.Embed(title="📅 Rapport Quotidien (24h)", color=0x3498db)
+    embed.add_field(name="Ventes", value=f"{total_sales:.2f}€", inline=True)
+    embed.add_field(name="Bénéfice Net", value=f"{profit:.2f}€", inline=True)
+    embed.set_footer(text=f"{len(rows)} commandes traitées.")
+
+    for admin_id in allowed_ids:
+        try:
+            user = await bot.fetch_user(admin_id)
+            if user:
+                await user.send(embed=embed)
+        except Exception as e:
+            print(f"Erreur envoi stats à {admin_id}: {e}")
 
 @bot.tree.command(name="deposit", description="Ajouter des crédits (Admin uniquement)")
 async def deposit(interaction: discord.Interaction, amount: float, user: discord.Member):
@@ -150,6 +198,42 @@ async def deposit(interaction: discord.Interaction, amount: float, user: discord
     update_balance(user.id, amount)
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ADMIN LOG: {interaction.user} (ID: {interaction.user.id}) credited {amount}€ to {user} (ID: {user.id})")
     await interaction.response.send_message(f"✅ Compte de {user.mention} crédité de {amount}€. Nouveau solde : {get_balance(user.id):.2f}€", ephemeral=True)
+
+@bot.tree.command(name="stats", description="Voir les bénéfices du jour (Admin uniquement)")
+async def stats(interaction: discord.Interaction):
+    allowed_ids = [227390137892339722, 1300246463951011981]
+    if interaction.user.id not in allowed_ids:
+        return await interaction.response.send_message("❌ Accès refusé.", ephemeral=True)
+
+    today = datetime.now().strftime('%Y-%m-%d')
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    
+    # On récupère les commandes COMPLETED du jour pour le calcul précis
+    # On filtre sur 'created_at' qui contient la date. LIKE '2023-12-08%'
+    cursor.execute("SELECT price, cost FROM orders WHERE status='COMPLETED' AND created_at LIKE ?", (f"{today}%",))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    total_sales = 0.0
+    total_cost = 0.0
+    
+    for price, cost in rows:
+        total_sales += price
+        # Si le coût n'a pas été enregistré (vieilles commandes), on estime grossièrement ou on ignore
+        if cost:
+            # Le cost stocké est le prix brut API. Il faut le convertir en EUR pour la comparaison (x0.9 approx)
+            total_cost += (cost * 0.9) 
+            
+    profit = total_sales - total_cost
+    
+    embed = discord.Embed(title=f"📊 Statistiques du {today}", color=0xffd700)
+    embed.add_field(name="Ventes Totales", value=f"{total_sales:.2f}€", inline=True)
+    embed.add_field(name="Coût Estimé (API)", value=f"{total_cost:.2f}€", inline=True)
+    embed.add_field(name="Bénéfice Net", value=f"{profit:.2f}€", inline=False)
+    embed.set_footer(text=f"{len(rows)} commandes terminées aujourd'hui.")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="balance", description="Voir mon solde")
 async def balance(interaction: discord.Interaction):
@@ -219,7 +303,8 @@ async def buy(interaction: discord.Interaction, service: app_commands.Choice[str
     prive_vente = round(margin_price * 0.9, 2)
     
     # 4. AFFICHAGE DE LA CONFIRMATION
-    view = ConfirmBuyView(srv_code, ctry_id, prive_vente, user_id, service.name, pays.name)
+    # On passe real_price à la vue pour qu'elle puisse l'enregistrer dans la DB
+    view = ConfirmBuyView(srv_code, ctry_id, prive_vente, user_id, service.name, pays.name, real_price)
     
     await interaction.followup.send(
         f"🔎 **Proposition d'achat**\n"
@@ -231,7 +316,7 @@ async def buy(interaction: discord.Interaction, service: app_commands.Choice[str
     )
 
 class ConfirmBuyView(discord.ui.View):
-    def __init__(self, service_code, country_id, price, user_id, service_name, country_name):
+    def __init__(self, service_code, country_id, price, user_id, service_name, country_name, cost_price):
         super().__init__(timeout=60)
         self.service_code = service_code
         self.country_id = country_id
@@ -239,6 +324,7 @@ class ConfirmBuyView(discord.ui.View):
         self.user_id = user_id
         self.service_name = service_name
         self.country_name = country_name
+        self.cost_price = cost_price
 
     @discord.ui.button(label="Confirmer", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -288,9 +374,9 @@ class ConfirmBuyView(discord.ui.View):
         update_balance(self.user_id, -self.price)
         
         conn = sqlite3.connect('database.db')
-        # On spécifie les colonnes pour éviter les problèmes d'ordre
-        conn.execute("INSERT INTO orders (order_id, discord_id, phone, price, status, created_at, service) VALUES (?, ?, ?, ?, ?, ?, ?)", 
-                     (order['id'], self.user_id, order['phone'], self.price, "PENDING", str(datetime.now()), self.service_name))
+        # On sauvegarde aussi le 'cost' (coût API brut) pour les stats
+        conn.execute("INSERT INTO orders (order_id, discord_id, phone, price, status, created_at, service, cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
+                     (order['id'], self.user_id, order['phone'], self.price, "PENDING", str(datetime.now()), self.service_name, self.cost_price))
         conn.commit()
         conn.close()
 
