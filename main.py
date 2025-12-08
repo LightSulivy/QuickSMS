@@ -6,10 +6,13 @@ import json
 import aiohttp
 import asyncio
 from datetime import datetime
+import os
+from dotenv import load_dotenv
 
 # --- CONFIGURATION ---
-TOKEN = "MTQ0NzY0MTAxMjM4MDg5NzM1NA.G_GSRb.Okbu71Xq2CUDuTanmK6VzbwFGAjsR4iXo2dc7M"
-API_KEY = "A51Adf27A48b50b4986A4f9b07808f4A"
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
+API_KEY = os.getenv("SMS_ACTIVATE_API_KEY")
 BASE_URL = "https://api.sms-activate.org/stubs/handler_api.php"
 
 # --- MAPPING (Pour simplifier la vie de tes clients) ---
