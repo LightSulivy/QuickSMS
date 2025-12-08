@@ -40,7 +40,8 @@ SERVICES = {
 }
 
 COUNTRIES = {
-    "france": "78"
+    "france": "78",
+    "canada": "36"
 }
 
 # --- GESTION BASE DE DONNÉES (SQLite) ---
@@ -256,9 +257,9 @@ async def services(interaction: discord.Interaction):
         
         if price_api:
             # Calcul du prix client
-            # Ajustement API (+50%) puis Marge (+20%) puis Conversion USD->EUR (x0.9)
+            # Ajustement API (+50%) puis Marge (+30%) puis Conversion USD->EUR (x0.9)
             adjusted_cost = price_api * 1.5
-            margin_price = adjusted_cost * 1.20
+            margin_price = adjusted_cost * 1.30
             final_price = round(margin_price * 0.9, 2)
             description += f"**{name.capitalize()}** : ~{final_price}€\n"
         else:
@@ -280,7 +281,8 @@ async def services(interaction: discord.Interaction):
     app_commands.Choice(name="TikTok", value="tiktok")
 ])
 @app_commands.choices(pays=[
-    app_commands.Choice(name="France (+33)", value="france")
+    app_commands.Choice(name="France (+33)", value="france"),
+    app_commands.Choice(name="Canada (+1)", value="canada")
 ])
 async def buy(interaction: discord.Interaction, service: app_commands.Choice[str], pays: app_commands.Choice[str]):
     user_id = interaction.user.id
@@ -300,9 +302,9 @@ async def buy(interaction: discord.Interaction, service: app_commands.Choice[str
          return await interaction.followup.send("❌ Impossible de récupérer le prix ou pas de stock.", ephemeral=True)
          
     # Calcul du prix de vente
-    # Ajustement API (+50%) puis Marge (+20%) puis Conversion USD->EUR (x0.9)
+    # Ajustement API (+50%) puis Marge (+30%) puis Conversion USD->EUR (x0.9)
     adjusted_cost = real_price * 1.5
-    margin_price = adjusted_cost * 1.20
+    margin_price = adjusted_cost * 1.30
     prive_vente = round(margin_price * 0.9, 2)
     
     # 4. AFFICHAGE DE LA CONFIRMATION
@@ -425,8 +427,10 @@ class ConfirmBuyView(discord.ui.View):
 # --- TÂCHE DE FOND : VÉRIFICATION DU SMS ---
 async def check_sms_loop(order_id, channel, view, original_interaction):
     attempts = 0
-    while attempts < 120: # Essayer pendant 10 minutes (120 * 5s)
-        if view.is_cancelled: # Si l'utilisateur a cliqué sur Annuler
+    received_codes = set() # Pour éviter de renvoyer le même code en boucle
+     
+    while attempts < 300: # 300 * 5s = 25 minutes max
+        if view.is_cancelled or view.is_finished:
             break
             
         status_text = await sms_api.get_status(order_id)
@@ -434,18 +438,35 @@ async def check_sms_loop(order_id, channel, view, original_interaction):
         # CAS 1 : CODE REÇU
         if "STATUS_OK" in status_text:
             code = status_text.split(':')[1].strip()
-            code = status_text.split(':')[1].strip()
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] CODE RECU: {code} for Order {order_id} (User: {interaction.user} ID: {interaction.user.id}) (Raw: {status_text})")
             
-            # Mise à jour DB
-            conn = sqlite3.connect('database.db')
-            conn.execute("UPDATE orders SET status='COMPLETED' WHERE order_id=?", (order_id,))
-            conn.commit()
-            conn.close()
-            
-            # Notifier l'utilisateur
-            await channel.send(f"📩 **CODE REÇU :** `{code}`")
-            return # Fin de la boucle
+            if code not in received_codes:
+                received_codes.add(code)
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] CODE RECU: {code}")
+                
+                # Mise à jour de la vue pour activer les boutons suite au code
+                view.code_received = True
+                
+                # On active les boutons Finish et Retry, on désactive Cancel
+                for child in view.children:
+                    if child.custom_id == "btn_finish" or child.custom_id == "btn_retry":
+                        child.disabled = False
+                    if child.custom_id == "btn_cancel":
+                        child.disabled = True
+                
+                # On envoie le code
+                await channel.send(f"📩 **CODE REÇU :** `{code}`\n*Si ce code ne fonctionne pas, cliquez sur 'Demander un autre code'.*")
+                
+                # On met à jour le message original avec les boutons activés
+                try:
+                    await original_interaction.edit_original_response(view=view)
+                except:
+                    pass
+                
+                # On réinitialise le compteur pour laisser du temps si on veut un autre code
+                attempts = 0 
+                
+            # On ne sort PAS de la boucle, on attend que l'utilisateur choisisse "Terminer" ou "Autre code"
+
 
         # CAS 2 : ANNULÉ PAR LE FOURNISSEUR
         elif "STATUS_CANCEL" in status_text:
@@ -455,10 +476,27 @@ async def check_sms_loop(order_id, channel, view, original_interaction):
         attempts += 1
         await asyncio.sleep(5) # Pause de 5 secondes
 
-    # Si on sort de la boucle sans code (Timeout)
-    if not view.is_cancelled:
-        await sms_api.cancel_order(order_id) # On annule chez SMS-Activate
-        await refund_user_channel(view.user_id, view.price, order_id, channel, reason="Temps écoulé")
+    # Si on sort de la boucle sans code (Timeout) ou si fini
+    if view.is_finished:
+        # Commande validée par l'utilisateur
+        conn = sqlite3.connect('database.db')
+        conn.execute("UPDATE orders SET status='COMPLETED' WHERE order_id=?", (order_id,))
+        conn.commit()
+        conn.close()
+        
+    elif not view.is_cancelled and not view.is_finished:
+        if not received_codes:
+            # Timeout sans AUCUN code reçu -> On annule et rembourse
+            await sms_api.cancel_order(order_id)
+            await refund_user_channel(view.user_id, view.price, order_id, channel, reason="Temps écoulé")
+        else:
+            # Timeout MAIS on a eu des codes -> On considère "Terminé" (le client a oublié de valider)
+            await sms_api.request('setStatus', {'id': order_id, 'status': '6'})
+            conn = sqlite3.connect('database.db')
+            conn.execute("UPDATE orders SET status='COMPLETED' WHERE order_id=?", (order_id,))
+            conn.commit()
+            conn.close()
+            await channel.send("ℹ️ Temps écoulé. Commande validée automatiquement.")
         
 async def refund_user_channel(user_id, amount, order_id, channel, reason="Annulation"):
     update_balance(user_id, amount)
@@ -486,12 +524,39 @@ class OrderView(discord.ui.View):
         self.user_id = user_id
         self.original_interaction = original_interaction
         self.is_cancelled = False
+        self.is_finished = False
+        self.code_received = False
 
-    @discord.ui.button(label="Annuler & Rembourser", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Terminer (Validé)", style=discord.ButtonStyle.success, disabled=True, custom_id="btn_finish")
+    async def finish(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("Ce n'est pas votre commande !", ephemeral=True)
+            
+        await interaction.response.defer()
+        # On valide la commande chez SMS-Activate (Status 6)
+        await sms_api.request('setStatus', {'id': self.order_id, 'status': '6'})
+        self.is_finished = True
+        self.stop() # On arrête la vue
+        await interaction.followup.send("✅ Commande terminée avec succès.", ephemeral=True)
+
+    @discord.ui.button(label="Demander un autre code", style=discord.ButtonStyle.primary, disabled=True, custom_id="btn_retry")
+    async def retry(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("Ce n'est pas votre commande !", ephemeral=True)
+        
+        await interaction.response.defer()
+        # On demande un autre code (Status 3)
+        await sms_api.request('setStatus', {'id': self.order_id, 'status': '3'})
+        await interaction.followup.send("🔄 Demande de nouveau code envoyée... Attendez le prochain SMS.", ephemeral=True)
+        
+    @discord.ui.button(label="Annuler & Rembourser", style=discord.ButtonStyle.danger, custom_id="btn_cancel")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("Ce n'est pas votre commande !", ephemeral=True)
         
+        if self.code_received:
+             return await interaction.response.send_message("❌ Impossible d'annuler car un code a déjà été reçu. Utilisez 'Terminer' ou demandez un autre code.", ephemeral=True)
+
         # On désactive le bouton pour éviter le double-clic
         button.disabled = True
         await interaction.response.edit_message(view=self)
@@ -500,22 +565,18 @@ class OrderView(discord.ui.View):
         api_response = await sms_api.cancel_order(self.order_id)
         
         # 2. On vérifie la réponse du fournisseur
-        # ACCESS_CANCEL = Succès, c'est annulé
-        # ACCESS_ACTIVATION_CANCELED = Déjà annulé
         if "ACCESS_CANCEL" in api_response or "ACCESS_ACTIVATION_CANCELED" in api_response:
             self.is_cancelled = True
-            
+            self.stop()
             # 3. C'est confirmé, on rembourse le client
             await refund_user(self.user_id, self.price, self.order_id, interaction, reason="Annulation utilisateur")
             
         else:
-            # 4. ÉCHEC : On explique pourquoi et on réactive le bouton
-            # Si l'erreur est "EARLY_CANCEL_TASK", c'est qu'il faut attendre un peu
+            # 4. ÉCHEC
             button.disabled = False
-            self.is_cancelled = False # On annule pas l'état
+            self.is_cancelled = False 
             await interaction.followup.send(
-                f"❌ Impossible d'annuler pour le moment. Le fournisseur a répondu : `{api_response}`.\n"
-                "Attendez 1 minute et réessayez.", 
+                f"❌ Impossible d'annuler pour le moment (Réponse API: `{api_response}`). Réessayez.", 
                 ephemeral=True
             )
             # On remet le bouton actif
