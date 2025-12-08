@@ -1,0 +1,432 @@
+import discord
+from discord import app_commands
+from discord.ext import commands
+import sqlite3
+import json
+import aiohttp
+import asyncio
+from datetime import datetime
+
+# --- CONFIGURATION ---
+TOKEN = "MTQ0NzY0MTAxMjM4MDg5NzM1NA.G_GSRb.Okbu71Xq2CUDuTanmK6VzbwFGAjsR4iXo2dc7M"
+API_KEY = "A51Adf27A48b50b4986A4f9b07808f4A"
+BASE_URL = "https://api.sms-activate.org/stubs/handler_api.php"
+
+# --- MAPPING (Pour simplifier la vie de tes clients) ---
+# SMS-Activate utilise des IDs pour les pays et des codes pour les services.
+# Tu devras compléter cette liste selon ce que tu veux vendre.
+SERVICES = {
+    "whatsapp": "wa",
+    "telegram": "tg",
+    "google": "go",
+    "amazon": "am",
+    "tinder": "oi",
+    "microsoft": "mm",
+    "facebook": "fb",
+    "instagram": "ig",
+    "tiktok": "lf"
+}
+
+COUNTRIES = {
+    "france": "78"
+}
+
+# --- GESTION BASE DE DONNÉES (SQLite) ---
+def init_db():
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    # Table Utilisateurs
+    c.execute('''CREATE TABLE IF NOT EXISTS users
+                 (discord_id INTEGER PRIMARY KEY, balance REAL DEFAULT 0.0)''')
+    # Table Commandes
+    # Table Commandes
+    c.execute('''CREATE TABLE IF NOT EXISTS orders
+                 (order_id TEXT PRIMARY KEY, discord_id INTEGER, 
+                  phone TEXT, price REAL, status TEXT, created_at TEXT, service TEXT)''')
+    
+    # Migration : Ajout colonne service si elle existe pas (pour les anciennes DB)
+    try:
+        c.execute("ALTER TABLE orders ADD COLUMN service TEXT")
+    except sqlite3.OperationalError:
+        pass # La colonne existe déjà
+
+    conn.commit()
+    conn.close()
+
+def get_balance(user_id):
+    conn = sqlite3.connect('database.db')
+    res = conn.execute("SELECT balance FROM users WHERE discord_id=?", (user_id,)).fetchone()
+    conn.close()
+    return res[0] if res else 0.0
+
+def update_balance(user_id, amount):
+    conn = sqlite3.connect('database.db')
+    conn.execute("INSERT OR IGNORE INTO users (discord_id, balance) VALUES (?, 0)", (user_id,))
+    conn.execute("UPDATE users SET balance = balance + ? WHERE discord_id=?", (amount, user_id))
+    conn.commit()
+    conn.close()
+
+def is_number_used(phone, service):
+    conn = sqlite3.connect('database.db')
+    # On regarde si ce numéro a déjà une commande complétée ou en attente pour ce service
+    res = conn.execute("SELECT 1 FROM orders WHERE phone=? AND service=?", (phone, service)).fetchone()
+    conn.close()
+    return res is not None
+
+# --- CLIENT API SMS-ACTIVATE ---
+class SMSClient:
+    async def request(self, action, params={}):
+        params['api_key'] = API_KEY
+        params['action'] = action
+        async with aiohttp.ClientSession() as session:
+            async with session.get(BASE_URL, params=params) as resp:
+                return await resp.text()
+
+    async def buy_number(self, service, country):
+        # Réponse attendue : ACCESS_NUMBER:$ID:$NUMBER
+        text = await self.request('getNumber', {'service': service, 'country': country, 'freePrice': 0})
+        if "ACCESS_NUMBER" in text:
+            parts = text.split(':')
+            return {"success": True, "id": parts[1], "phone": parts[2]}
+        elif "NO_NUMBERS" in text:
+            return {"success": False, "error": "Plus de stock pour ce pays."}
+        elif "NO_BALANCE" in text:
+            return {"success": False, "error": "Erreur interne (Fonds insuffisants chez le bot)."}
+        else:
+            return {"success": False, "error": text}
+
+    async def get_price(self, service, country):
+        try:
+            # On retourne sur getPrices pour avoir le prix Réel (et pas moyen/stats)
+            response = await self.request('getPrices', {'service': service, 'country': country, 'freePrice': 0})
+            
+            # Pas de print global pour éviter le spam, on affiche juste le résultat trouvé
+            data = json.loads(response)
+            
+            country_str = str(country)
+            
+            if country_str in data and service in data[country_str]:
+                cost = float(data[country_str][service]['cost'])
+                count = data[country_str][service]['count']
+                return cost
+            
+            print(f"DEBUG: Pas de prix trouvé pour {service} en pays {country}")
+            return None
+        except Exception as e:
+            print(f"Erreur get_price: {e}")
+            return None
+
+    async def get_status(self, activation_id):
+        # Réponse attendue : STATUS_OK:CODE ou STATUS_WAIT_CODE
+        text = await self.request('getStatus', {'id': activation_id})
+        return text
+
+    async def cancel_order(self, activation_id):
+        # On envoie le statut 8 (Annulation)
+        # On attend la réponse pour savoir si ça a marché
+        response = await self.request('setStatus', {'id': activation_id, 'status': '8'})
+        print(f"DEBUG ANNULATION - ID {activation_id} : {response}") # Pour voir ce qui se passe dans ta console
+        return response
+
+# --- LOGIQUE DU BOT ---
+init_db()
+bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
+sms_api = SMSClient()
+
+@bot.event
+async def on_ready():
+    await bot.tree.sync()
+    print(f"Bot connecté en tant que {bot.user}")
+
+@bot.tree.command(name="deposit", description="Ajouter des crédits (Admin uniquement)")
+async def deposit(interaction: discord.Interaction, amount: float, user: discord.Member):
+    allowed_ids = [227390137892339722, 1300246463951011981]
+    if interaction.user.id not in allowed_ids:
+        return await interaction.response.send_message("❌ Vous n'avez pas la permission d'utiliser cette commande.", ephemeral=True)
+
+    update_balance(user.id, amount)
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ADMIN LOG: {interaction.user} (ID: {interaction.user.id}) credited {amount}€ to {user} (ID: {user.id})")
+    await interaction.response.send_message(f"✅ Compte de {user.mention} crédité de {amount}€. Nouveau solde : {get_balance(user.id):.2f}€", ephemeral=True)
+
+@bot.tree.command(name="balance", description="Voir mon solde")
+async def balance(interaction: discord.Interaction):
+    await interaction.response.send_message(f"💰 Votre solde : {get_balance(interaction.user.id):.2f}€", ephemeral=True)
+
+@bot.tree.command(name="services", description="Voir les services et prix disponibles")
+async def services(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    
+    embed = discord.Embed(title="📱 Services Disponibles", color=0x00ff00)
+    user_balance = get_balance(interaction.user.id)
+    description = f"**Votre solde : {user_balance:.2f}€**\n\n**Pays : France (+33)**\n\n"
+    
+    for name, code in SERVICES.items():
+        # On récupère le prix indicatif (pour la France par défaut)
+        price_api = await sms_api.get_price(code, COUNTRIES['france'])
+        
+        if price_api:
+            # Calcul du prix client
+            # Ajustement API (+50%) puis Marge (+20%) puis Conversion USD->EUR (x0.9)
+            adjusted_cost = price_api * 1.5
+            margin_price = adjusted_cost * 1.20
+            final_price = round(margin_price * 0.9, 2)
+            description += f"**{name.capitalize()}** : ~{final_price}€\n"
+        else:
+            description += f"**{name.capitalize()}** : *Indisponible*\n"
+            
+    embed.description = description
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="buy", description="Acheter un numéro")
+@app_commands.choices(service=[
+    app_commands.Choice(name="WhatsApp", value="whatsapp"),
+    app_commands.Choice(name="Telegram", value="telegram"),
+    app_commands.Choice(name="Google", value="google"),
+    app_commands.Choice(name="Amazon", value="amazon"),
+    app_commands.Choice(name="Tinder", value="tinder"),
+    app_commands.Choice(name="Microsoft", value="microsoft"),
+    app_commands.Choice(name="Facebook", value="facebook"),
+    app_commands.Choice(name="Instagram", value="instagram"),
+    app_commands.Choice(name="TikTok", value="tiktok")
+])
+@app_commands.choices(pays=[
+    app_commands.Choice(name="France (+33)", value="france")
+])
+async def buy(interaction: discord.Interaction, service: app_commands.Choice[str], pays: app_commands.Choice[str]):
+    user_id = interaction.user.id
+    
+    await interaction.response.defer(ephemeral=True)
+    
+    # 1. DÉFINITION DU PRIX (Récupération via API)
+    srv_code = SERVICES[service.value]
+    ctry_id = COUNTRIES[pays.value]
+    
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] BUY REQUEST: {interaction.user} (ID: {interaction.user.id}) requested {service.name} in {pays.name}")
+    
+    # On récupère le prix réel du service
+    real_price = await sms_api.get_price(srv_code, ctry_id)
+    
+    if real_price is None:
+         return await interaction.followup.send("❌ Impossible de récupérer le prix ou pas de stock.", ephemeral=True)
+         
+    # Calcul du prix de vente
+    # Ajustement API (+50%) puis Marge (+20%) puis Conversion USD->EUR (x0.9)
+    adjusted_cost = real_price * 1.5
+    margin_price = adjusted_cost * 1.20
+    prive_vente = round(margin_price * 0.9, 2)
+    
+    # 4. AFFICHAGE DE LA CONFIRMATION
+    view = ConfirmBuyView(srv_code, ctry_id, prive_vente, user_id, service.name, pays.name)
+    
+    await interaction.followup.send(
+        f"🔎 **Proposition d'achat**\n"
+        f"Service : {service.name} | Pays : {pays.name}\n"
+        f"Prix : **{prive_vente}€**\n\n"
+        f"Voulez-vous confirmer l'achat ?",
+        view=view,
+        ephemeral=True
+    )
+
+class ConfirmBuyView(discord.ui.View):
+    def __init__(self, service_code, country_id, price, user_id, service_name, country_name):
+        super().__init__(timeout=60)
+        self.service_code = service_code
+        self.country_id = country_id
+        self.price = price
+        self.user_id = user_id
+        self.service_name = service_name
+        self.country_name = country_name
+
+    @discord.ui.button(label="Confirmer", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("Ce n'est pas votre commande !", ephemeral=True)
+            
+        # Vérification Solde
+        if get_balance(self.user_id) < self.price:
+             return await interaction.response.send_message("❌ Solde insuffisant pour confirmer.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+        # Désactiver les boutons
+        self.clear_items()
+        await interaction.edit_original_response(view=self)
+
+        # 2. APPEL API (Achat réel) avec vérification de doublon
+        max_retries = 5
+        order = None
+        
+        for i in range(max_retries):
+            # Achat du numéro
+            temp_order = await sms_api.buy_number(self.service_code, self.country_id)
+            
+            if not temp_order['success']:
+                return await interaction.followup.send(f"❌ Échec de l'achat : {temp_order['error']}", ephemeral=True)
+            
+            # Vérification si déjà utilisé
+            if is_number_used(temp_order['phone'], self.service_name):
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] REJET DOUBLON: Numéro {temp_order['phone']} déjà utilisé pour {self.service_name}. Nouvel essai...")
+                # On annule immédiatement ce mauvais numéro
+                await sms_api.cancel_order(temp_order['id'])
+                await asyncio.sleep(1) # Petite pause pour pas spam l'API
+                continue # On réessaye
+            else:
+                # C'est un bon numéro !
+                order = temp_order
+                break
+        
+        if order is None:
+             return await interaction.followup.send(f"❌ Impossible de trouver un numéro vierge après {max_retries} essais. Réessayez plus tard.", ephemeral=True)
+
+
+        if not order['success']:
+            return await interaction.followup.send(f"❌ Échec de l'achat : {order['error']}", ephemeral=True)
+
+        # 3. DÉBIT ET SAUVEGARDE
+        update_balance(self.user_id, -self.price)
+        
+        conn = sqlite3.connect('database.db')
+        # On spécifie les colonnes pour éviter les problèmes d'ordre
+        conn.execute("INSERT INTO orders (order_id, discord_id, phone, price, status, created_at, service) VALUES (?, ?, ?, ?, ?, ?, ?)", 
+                     (order['id'], self.user_id, order['phone'], self.price, "PENDING", str(datetime.now()), self.service_name))
+        conn.commit()
+        conn.close()
+
+        # 4. ENVOI EN DM
+        try:
+            # On crée le DM si pas existant
+            dm_channel = await interaction.user.create_dm()
+            
+            # 5. AFFICHAGE ET SUIVI (EN DM)
+            view = OrderView(order['id'], self.price, self.user_id, dm_channel)
+            new_balance = get_balance(self.user_id)
+            
+            await dm_channel.send(
+                f"✅ **Commande confirmée pour {interaction.user.mention}**\n"
+                f"**Numéro réservé :** `{order['phone']}`\n"
+                f"Service : {self.service_name} | Pays : {self.country_name}\n"
+                f"💰 Débité : {self.price}€\n"
+                f"💳 **Solde restant : {new_balance:.2f}€**\n\n"
+                f"📡 **En attente du SMS...**",
+                view=view
+            )
+            
+            await interaction.followup.send(f"✅ Commande validée ! Je vous ai envoyé les détails en MP.", ephemeral=True)
+
+            # 6. DÉMARRAGE DU POLLING
+            asyncio.create_task(check_sms_loop(order['id'], dm_channel, view, interaction))
+            
+        except discord.Forbidden:
+             # Si l'utilisateur a bloqué les MPs
+             return await interaction.followup.send(f"❌ Je ne peux pas vous envoyer de MP. Veuillez activer vos messages privés et réessayer.", ephemeral=True)
+        except Exception as e:
+             return await interaction.followup.send(f"❌ Erreur lors de l'envoi du MP : {e}", ephemeral=True)
+
+    @discord.ui.button(label="Annuler", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("Ce n'est pas votre commande !", ephemeral=True)
+            
+        self.clear_items()
+        await interaction.response.edit_message(content="❌ Achat annulé.", view=self)
+
+
+# --- TÂCHE DE FOND : VÉRIFICATION DU SMS ---
+async def check_sms_loop(order_id, channel, view, original_interaction):
+    attempts = 0
+    while attempts < 120: # Essayer pendant 10 minutes (120 * 5s)
+        if view.is_cancelled: # Si l'utilisateur a cliqué sur Annuler
+            break
+            
+        status_text = await sms_api.get_status(order_id)
+        
+        # CAS 1 : CODE REÇU
+        if "STATUS_OK" in status_text:
+            code = status_text.split(':')[1].strip()
+            code = status_text.split(':')[1].strip()
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] CODE RECU: {code} for Order {order_id} (User: {interaction.user} ID: {interaction.user.id}) (Raw: {status_text})")
+            
+            # Mise à jour DB
+            conn = sqlite3.connect('database.db')
+            conn.execute("UPDATE orders SET status='COMPLETED' WHERE order_id=?", (order_id,))
+            conn.commit()
+            conn.close()
+            
+            # Notifier l'utilisateur
+            await channel.send(f"📩 **CODE REÇU :** `{code}`")
+            return # Fin de la boucle
+
+        # CAS 2 : ANNULÉ PAR LE FOURNISSEUR
+        elif "STATUS_CANCEL" in status_text:
+            await refund_user_channel(view.user_id, view.price, order_id, channel)
+            return
+
+        attempts += 1
+        await asyncio.sleep(5) # Pause de 5 secondes
+
+    # Si on sort de la boucle sans code (Timeout)
+    if not view.is_cancelled:
+        await sms_api.cancel_order(order_id) # On annule chez SMS-Activate
+        await refund_user_channel(view.user_id, view.price, order_id, channel, reason="Temps écoulé")
+        
+async def refund_user_channel(user_id, amount, order_id, channel, reason="Annulation"):
+    update_balance(user_id, amount)
+    conn = sqlite3.connect('database.db')
+    conn.execute("UPDATE orders SET status='REFUNDED' WHERE order_id=?", (order_id,))
+    conn.commit()
+    conn.close()
+    await channel.send(f"info : Commande annulée ({reason}). Vous avez été remboursé de {amount}€.")
+
+async def refund_user(user_id, amount, order_id, interaction, reason="Annulation"):
+    update_balance(user_id, amount)
+    conn = sqlite3.connect('database.db')
+    conn.execute("UPDATE orders SET status='REFUNDED' WHERE order_id=?", (order_id,))
+    conn.commit()
+    conn.close()
+    await interaction.followup.send(f"info : Commande annulée ({reason}). Vous avez été remboursé de {amount}€.", ephemeral=True)
+
+
+# --- INTERFACE BOUTONS ---
+class OrderView(discord.ui.View):
+    def __init__(self, order_id, price, user_id, original_interaction):
+        super().__init__(timeout=None)
+        self.order_id = order_id
+        self.price = price
+        self.user_id = user_id
+        self.original_interaction = original_interaction
+        self.is_cancelled = False
+
+    @discord.ui.button(label="Annuler & Rembourser", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("Ce n'est pas votre commande !", ephemeral=True)
+        
+        # On désactive le bouton pour éviter le double-clic
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+        
+        # 1. On tente d'annuler chez SMS-Activate D'ABORD
+        api_response = await sms_api.cancel_order(self.order_id)
+        
+        # 2. On vérifie la réponse du fournisseur
+        # ACCESS_CANCEL = Succès, c'est annulé
+        # ACCESS_ACTIVATION_CANCELED = Déjà annulé
+        if "ACCESS_CANCEL" in api_response or "ACCESS_ACTIVATION_CANCELED" in api_response:
+            self.is_cancelled = True
+            
+            # 3. C'est confirmé, on rembourse le client
+            await refund_user(self.user_id, self.price, self.order_id, interaction, reason="Annulation utilisateur")
+            
+        else:
+            # 4. ÉCHEC : On explique pourquoi et on réactive le bouton
+            # Si l'erreur est "EARLY_CANCEL_TASK", c'est qu'il faut attendre un peu
+            button.disabled = False
+            self.is_cancelled = False # On annule pas l'état
+            await interaction.followup.send(
+                f"❌ Impossible d'annuler pour le moment. Le fournisseur a répondu : `{api_response}`.\n"
+                "Attendez 1 minute et réessayez.", 
+                ephemeral=True
+            )
+            # On remet le bouton actif
+            await interaction.edit_original_response(view=self)
+            
+bot.run(TOKEN)
