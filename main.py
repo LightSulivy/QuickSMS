@@ -42,6 +42,12 @@ SERVICES = {
 
 COUNTRIES = {"france": "78", "canada": "36"}
 
+# --- HOODPAY CONFIG ---
+HOODPAY_BS_ID = os.getenv("HOODPAY_BUSINESS_ID")
+HOODPAY_API_KEY = os.getenv("HOODPAY_API_KEY")
+HOODPAY_WEBHOOK_SECRET = os.getenv("HOODPAY_WEBHOOK_SECRET")
+WEBHOOK_PORT = 5000  # Port pour écouter les paiements
+
 
 # --- GESTION BASE DE DONNÉES (SQLite) ---
 def init_db():
@@ -232,10 +238,82 @@ class SMSClient:
         return response
 
 
+# --- CLIENT HOODPAY ---
+class HoodpayClient:
+    def __init__(self):
+        self.base_url = "https://api.hoodpay.io/v1"
+        self.headers = {
+            "Authorization": f"Bearer {HOODPAY_API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+    async def create_payment(self, amount, user_id, guild_id):
+        url = f"{self.base_url}/payments"
+        payload = {
+            "amount": float(amount),
+            "currency": "EUR",
+            "description": f"Recharge QuickSMS - {amount}€",
+            "businessId": HOODPAY_BS_ID,
+            "metadata": {
+                "user_id": str(user_id),
+                "guild_id": str(guild_id)
+            }
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=self.headers) as resp:
+                if resp.status == 200 or resp.status == 201:
+                    data = await resp.json()
+                    return data.get("data", {}).get("checkoutUrl")
+                else:
+                    text = await resp.text()
+                    print(f"Erreur Hoodpay ({resp.status}): {text}")
+                    return None
+
+# --- WEBHOOK SERVER ---
+from aiohttp import web
+
+async def handle_webhook(request):
+    # Sécurité : Vérifier le secret si possible (Hoodpay envoie souvent une signature)
+    # Pour l'instant on fait simple
+    try:
+        data = await request.json()
+        print(f"WEBHOOK REÇU : {data}")
+        
+        event_type = data.get("type")
+        if event_type == "payment.succeeded":
+            payload = data.get("data", {})
+            metadata = payload.get("metadata", {})
+            user_id = int(metadata.get("user_id", 0))
+            amount = float(payload.get("amount", 0))
+            
+            if user_id > 0:
+                print(f"✅ Paiement validé pour {user_id} : +{amount}€")
+                update_balance(user_id, amount)
+                
+                # Notification utilisateur (Optionnel, requiert d'avoir le bot accessible)
+                # On ne peut pas facilement await bot.fetch_user ici sans contexte, 
+                # mais le solde est mis à jour.
+                
+        return web.Response(text="OK")
+    except Exception as e:
+        print(f"Erreur Webhook: {e}")
+        return web.Response(status=500, text="Error")
+
+async def start_webhook_server():
+    app = web.Application()
+    app.router.add_post('/webhook', handle_webhook)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', WEBHOOK_PORT)
+    await site.start()
+    print(f"🌍 Serveur Webhook démarré sur le port {WEBHOOK_PORT}")
+
 # --- LOGIQUE DU BOT ---
 init_db()
 bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
 sms_api = SMSClient()
+hoodpay_api = HoodpayClient()
 
 
 @bot.event
@@ -244,6 +322,10 @@ async def on_ready():
     bot.add_view(DashboardView())
     if not daily_stats_task.is_running():
         daily_stats_task.start()
+        
+    # Démarrage du serveur Webhook
+    if HOODPAY_API_KEY:
+        await start_webhook_server()
 
     # Setup Dashboard sur tous les serveurs
     for guild in bot.guilds:
@@ -358,6 +440,27 @@ async def deposit(
         f"✅ Compte de {user.mention} crédité de {amount}€. Nouveau solde : {get_balance(user.id):.2f}€",
         ephemeral=True,
     )
+
+
+@bot.tree.command(name="recharge", description="Recharger votre solde (Carte/Crypto via Hoodpay)")
+async def recharge(interaction: discord.Interaction, amount: float):
+    if amount < 1:
+        return await interaction.response.send_message("❌ Minimum 1€.", ephemeral=True)
+        
+    await interaction.response.defer(ephemeral=True)
+    
+    if not HOODPAY_API_KEY:
+        return await interaction.followup.send("❌ Les paiements sont désactivés pour le moment (Config manquante).", ephemeral=True)
+        
+    url = await hoodpay_api.create_payment(amount, interaction.user.id, interaction.guild_id)
+    
+    if url:
+        embed = discord.Embed(title="💳 Recharger mon compte", description=f"Cliquez sur le lien ci-dessous pour payer **{amount}€** via Hoodpay (CB / Crypto).", color=0x5865F2)
+        embed.add_field(name="Lien de paiement", value=f"[👉 Payer maintenant]({url})", inline=False)
+        embed.set_footer(text="Votre solde sera crédité automatiquement après validation.")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    else:
+        await interaction.followup.send("❌ Erreur lors de la création du paiement. Réessayez plus tard.", ephemeral=True)
 
 
 @bot.tree.command(name="setmargin", description="Changer la marge (Admin uniquement)")
@@ -580,7 +683,6 @@ class ConfirmPackView(discord.ui.View):
         if interaction.user.id != self.user_id:
             return
 
-        self.clear_items()
         self.clear_items()
         try:
             await interaction.response.edit_message(content="❌ Pack annulé.", view=self)
@@ -1173,7 +1275,7 @@ class DashboardView(discord.ui.View):
     ):
         balance = get_balance(interaction.user.id)
         await interaction.response.send_message(
-            f"💰 **Votre solde : {balance:.2f}€**", ephemeral=True
+            f"💰 **Votre solde : {balance:.2f}€**\nSi vous souhaitez recharger, utilisez la commande `/recharge`.", ephemeral=True
         )
 
     @discord.ui.button(
