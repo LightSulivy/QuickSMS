@@ -174,7 +174,9 @@ class SMSClient:
 
     async def buy_number(self, service, country):
         # Réponse attendue : ACCESS_NUMBER:$ID:$NUMBER
-        text = await self.request("getNumber", {"service": service, "country": country})
+        text = await self.request(
+            "getNumber", {"service": service, "country": country, "freePrice": 1}
+        )
         print(f"DEBUG buy_number response: {text}")
         if "ACCESS_NUMBER" in text:
             parts = text.split(":")
