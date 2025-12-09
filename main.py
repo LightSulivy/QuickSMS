@@ -918,7 +918,7 @@ class OrderView(discord.ui.View):
             await interaction.edit_original_response(view=self)
 
     @discord.ui.button(
-        label="⛔ Compte Bloqué",
+        label="⛔ Compte Banni",
         style=discord.ButtonStyle.danger,
         custom_id="btn_block_number",
         row=1,
@@ -933,7 +933,7 @@ class OrderView(discord.ui.View):
 
         if self.code_received:
             return await interaction.response.send_message(
-                "❌ Impossible de signaler un compte bloqué après avoir reçu un code.",
+                "❌ Impossible de signaler un compte banni après avoir reçu un code.",
                 ephemeral=True,
             )
 
@@ -958,7 +958,7 @@ class OrderView(discord.ui.View):
                 self.price,
                 self.order_id,
                 interaction,
-                reason="Compte Bloqué - Signalé par utilisateur",
+                reason="Compte Banni - Signalé par utilisateur",
             )
 
             # 4. Blacklist du numéro
@@ -966,7 +966,7 @@ class OrderView(discord.ui.View):
                 block_number_db(self.phone, self.service_name)
 
             await interaction.followup.send(
-                f"🚫 **Numéro {self.phone} bloqué et signalé.** Vous avez été remboursé.\n🔄 **Recherche d'un nouveau numéro en cours...**",
+                f"🚫 **Numéro {self.phone} banni et signalé.** Vous avez été remboursé.\n🔄 **Recherche d'un nouveau numéro en cours...**",
                 ephemeral=True,
             )
 
