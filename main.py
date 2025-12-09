@@ -244,16 +244,31 @@ async def balance(interaction: discord.Interaction):
     await interaction.response.send_message(f"💰 Votre solde : {get_balance(interaction.user.id):.2f}€", ephemeral=True)
 
 @bot.tree.command(name="services", description="Voir les services et prix disponibles")
-async def services(interaction: discord.Interaction):
+@app_commands.describe(country="Le pays pour lequel afficher les prix (défaut : France)")
+@app_commands.choices(country=[
+    app_commands.Choice(name="France (+33)", value="france"),
+    app_commands.Choice(name="Canada (+1)", value="canada")
+])
+async def services(interaction: discord.Interaction, country: app_commands.Choice[str] = None):
     await interaction.response.defer(ephemeral=True)
     
+    # Pays par défaut : France
+    selected_country_code = "france"
+    selected_country_name = "France (+33)"
+    
+    if country:
+        selected_country_code = country.value
+        selected_country_name = country.name
+
     embed = discord.Embed(title="📱 Services Disponibles", color=0x00ff00)
     user_balance = get_balance(interaction.user.id)
-    description = f"**Votre solde : {user_balance:.2f}€**\n\n**Pays : France (+33)**\n\n"
+    description = f"**Votre solde : {user_balance:.2f}€**\n\n**Pays : {selected_country_name}**\n\n"
+    
+    country_id = COUNTRIES[selected_country_code]
     
     for name, code in SERVICES.items():
-        # On récupère le prix indicatif (pour la France par défaut)
-        price_api = await sms_api.get_price(code, COUNTRIES['france'])
+        # On récupère le prix indicatif pour le pays choisi
+        price_api = await sms_api.get_price(code, country_id)
         
         if price_api:
             # Calcul du prix client
