@@ -40,7 +40,7 @@ SERVICES = {
     "tiktok": "lf",
 }
 
-COUNTRIES = {"france": "78", "canada": "36"}
+COUNTRIES = {"france": "78", "canada": "36", "united_kingdom": "16"}
 
 # --- HOODPAY CONFIG ---
 HOODPAY_BS_ID = os.getenv("HOODPAY_BUSINESS_ID")
@@ -115,8 +115,8 @@ def calculate_selling_price(api_price):
         return None
     
     margin = get_margin()
-    # Formule : ((API * 1.5) * margin) * 0.9
-    return round(((api_price * 1.5) * margin) * 0.9, 2)
+    # Formule : ((API * 1.3) * margin) * 0.9
+    return round(((api_price * 1.3) * margin) * 0.9, 2)
 
 
 def get_balance(user_id):
@@ -402,7 +402,7 @@ async def daily_stats_task():
     for _, price, cost in rows:
         total_sales += price
         if cost:
-            total_cost += cost * 1.5 * 0.9
+            total_cost += cost * 1.3 * 0.9
 
     profit = total_sales - total_cost
 
@@ -511,8 +511,8 @@ async def stats(interaction: discord.Interaction):
         total_sales += price
         # Si le coût n'a pas été enregistré (vieilles commandes), on estime grossièrement ou on ignore
         if cost:
-            # Le cost stocké est le prix brut API. Il faut le convertir en EUR pour la comparaison (x1.5 * 0.9 approx)
-            total_cost += cost * 1.5 * 0.9
+            # Le cost stocké est le prix brut API. Il faut le convertir en EUR pour la comparaison (x1.3 * 0.9 approx)
+            total_cost += cost * 1.3 * 0.9
 
     profit = total_sales - total_cost
 
@@ -592,14 +592,14 @@ async def services(
 
 async def execute_pack_logic(interaction: discord.Interaction):
     # Pack WA (France) + TG (Canada)
-    steps = [("telegram", "canada")]
+    steps = [("telegram", "united_kingdom")]
 
     # 1. Calcul des prix pour le pack
     svc1_code = SERVICES["whatsapp"]
     ctry1_id = COUNTRIES["france"]
 
     svc2_code = SERVICES["telegram"]
-    ctry2_id = COUNTRIES["canada"]
+    ctry2_id = COUNTRIES["united_kingdom"]
 
     # On lance les requêtes de prix en parallèle
     price1_brut, price2_brut = await asyncio.gather(
@@ -621,14 +621,14 @@ async def execute_pack_logic(interaction: discord.Interaction):
 
         embed = discord.Embed(
             title="📦 Confirmation Pack",
-            description="Détail du Pack **Whatsapp (FR) + Telegram (CA)**",
+            description="Détail du Pack **Whatsapp (FR) + Telegram (UK)**",
             color=0xE91E63,
         )
         embed.add_field(
             name="1. Whatsapp (France)", value=f"{price1:.2f}€", inline=True
         )
         embed.add_field(
-            name="2. Telegram (Canada)", value=f"{price2:.2f}€", inline=True
+            name="2. Telegram (UK)", value=f"{price2:.2f}€", inline=True
         )
         embed.add_field(
             name="💰 PRIX TOTAL", value=f"**{total_price:.2f}€**", inline=False
@@ -1137,51 +1137,42 @@ class OrderView(discord.ui.View):
         button.disabled = True
         await interaction.edit_original_response(view=self)
 
-        # 1. Annulation chez SMS-Activate
+        # 1. Tentative d'annulation chez SMS-Activate (Best effort)
         api_response = await sms_api.cancel_order(self.order_id)
+        # On log mais on ignore l'erreur si ça rate (le remboursement auto se fera plus tard côté API)
+        print(f"Cancel Blocked Number response: {api_response}")
 
-        # 2. Vérification
-        if (
-            "ACCESS_CANCEL" in api_response
-            or "ACCESS_ACTIVATION_CANCELED" in api_response
-        ):
-            self.is_cancelled = True
-            self.stop()
+        # 2. On procède DIRECTEMENT au remboursement interne et au changement de numéro
+        self.is_cancelled = True
+        self.stop()
 
-            # 3. Remboursement
-            await refund_user(
-                self.user_id,
-                self.price,
-                self.order_id,
+        # 3. Remboursement interne immédiat
+        await refund_user(
+            self.user_id,
+            self.price,
+            self.order_id,
+            interaction,
+            reason="Compte Banni - Signalé par utilisateur",
+        )
+
+        # 4. Blacklist du numéro
+        if self.phone and self.service_name:
+            block_number_db(self.phone, self.service_name)
+
+        await interaction.followup.send(
+            f"🚫 **Numéro {self.phone} géré (Banni).** Remplacement automatique en cours...",
+            ephemeral=True,
+        )
+
+        # 5. Retry Logic (Relance immédiate avec nouveau numéro)
+        # On relance exactement la même demande (même service, même pays, même suite de pack)
+        if self.service_key and self.country_key:
+            await execute_buy_logic(
                 interaction,
-                reason="Compte Banni - Signalé par utilisateur",
+                self.service_key,
+                self.country_key,
+                next_steps=self.next_steps,
             )
-
-            # 4. Blacklist du numéro
-            if self.phone and self.service_name:
-                block_number_db(self.phone, self.service_name)
-
-            await interaction.followup.send(
-                f"🚫 **Numéro {self.phone} banni et signalé.** Vous avez été remboursé.\n🔄 **Recherche d'un nouveau numéro en cours...**",
-                ephemeral=True,
-            )
-
-            # 5. Retry Logic (Relance immédiate)
-            if self.service_key and self.country_key:
-                await execute_buy_logic(
-                    interaction,
-                    self.service_key,
-                    self.country_key,
-                    next_steps=self.next_steps,
-                )
-        else:
-            button.disabled = False
-            self.is_cancelled = False
-            error_message = f"❌ Impossible d'annuler pour le moment (Réponse API: `{api_response}`)."
-            if "EARLY_CANCEL_DENIED" in api_response:
-                error_message = "⏳ **Trop tôt !** Attendez 2 minutes."
-            await interaction.followup.send(error_message, ephemeral=True)
-            await interaction.edit_original_response(view=self)
 
 
 async def setup_dashboard(guild):
@@ -1202,17 +1193,11 @@ async def setup_dashboard(guild):
             print(f"Erreur création salon sur {guild.name}: {e}")
             return
 
-    # Vérification du dernier message
-    # On cherche si on a déjà posté le dashboard
-    last_message = None
-    async for message in channel.history(limit=5):
-        if (
-            message.author == bot.user
-            and message.embeds
-            and message.embeds[0].title == "🚀 QuickSMS Dashboard"
-        ):
-            last_message = message
-            break
+    # Nettoyage complet du salon (pour ne garder qu'un seul message)
+    try:
+        await channel.purge(limit=100)
+    except Exception as e:
+        print(f"Erreur purge channel: {e}")
 
     view = DashboardView()
     embed = discord.Embed(
@@ -1220,14 +1205,8 @@ async def setup_dashboard(guild):
         description="Bienvenue ! Utilisez les boutons ci-dessous pour commander.",
         color=0x3498DB,
     )
-
-    if last_message:
-        # On ne fait rien si le dashboard est déjà là (ou on l'update si besoin)
-        pass
-    else:
-        # On nettoie et on poste
-        await channel.purge(limit=10)
-        await channel.send(embed=embed, view=view)
+    
+    await channel.send(embed=embed, view=view)
 
 
 class DashboardView(discord.ui.View):
