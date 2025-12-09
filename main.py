@@ -1160,10 +1160,9 @@ class CountrySelect(discord.ui.Select):
         country_key = self.values[0]
 
         if self.mode == "buy":
-            await interaction.response.send_message(
-                f"📱 **Pays : {country_key.capitalize()}**. Choisissez le service :",
-                view=ServiceSelectView(country_key),
-                ephemeral=True,
+            await interaction.response.edit_message(
+                content=f"📱 **Pays : {country_key.capitalize()}**. Choisissez le service :",
+                view=ServiceSelectView(country_key)
             )
         else:
             # Mode Prix
@@ -1199,7 +1198,7 @@ class CountrySelect(discord.ui.Select):
 
             embed.description = description
             embed.set_footer(text="Prix sujets à variation (Offre/Demande)")
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.edit_original_response(content=None, embed=embed, view=None)
 
 
 class ServiceSelectView(discord.ui.View):
@@ -1263,16 +1262,21 @@ class ServiceSelect(discord.ui.Select):
         try:
             dm_channel = await interaction.user.create_dm()
             await dm_channel.send(embed=embed, view=view)
-            await interaction.followup.send(
-                "📩 Confirmation envoyée en MP. Vérifiez vos messages !", ephemeral=True
+            
+            # On met à jour le message éphémère pour dire que c'est envoyé
+            await interaction.edit_original_response(
+                content="📩 Confirmation envoyée en MP. Vérifiez vos messages !",
+                embed=None,
+                view=None
             )
         except discord.Forbidden:
-            await interaction.followup.send(
-                "❌ Impossible de vous envoyer un MP. Ouvrez vos messages privés.",
-                ephemeral=True,
+            await interaction.edit_original_response(
+                content="❌ Impossible de vous envoyer un MP. Ouvrez vos messages privés.",
+                embed=None,
+                view=None
             )
         except Exception as e:
-            await interaction.followup.send(f"❌ Erreur : {e}", ephemeral=True)
+            await interaction.edit_original_response(content=f"❌ Erreur : {e}", embed=None, view=None)
 
 
 bot.run(TOKEN)
