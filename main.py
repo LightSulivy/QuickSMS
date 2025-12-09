@@ -161,7 +161,7 @@ class SMSClient:
             parts = text.split(":")
             return {"success": True, "id": parts[1], "phone": parts[2]}
         elif "NO_NUMBERS" in text:
-            return {"success": False, "error": "Plus de stock pour ce pays."}
+            return {"success": False, "error": "Plus de stock pour ce pays.", "code": "NO_NUMBERS"}
         elif "NO_BALANCE" in text:
             return {
                 "success": False,
@@ -184,8 +184,11 @@ class SMSClient:
 
             if country_str in data and service in data[country_str]:
                 cost = float(data[country_str][service]["cost"])
-                count = data[country_str][service]["count"]
-                return cost
+                count = int(data[country_str][service]["count"])
+                if count > 0:
+                    return cost
+                else:
+                    return None
 
             print(f"DEBUG: Pas de prix trouvé pour {service} en pays {country}")
             return None
@@ -296,7 +299,7 @@ async def daily_stats_task():
     for _, price, cost in rows:
         total_sales += price
         if cost:
-            total_cost += cost * 0.9
+            total_cost += cost * 1.5 * 0.9
 
     profit = total_sales - total_cost
 
@@ -365,8 +368,8 @@ async def stats(interaction: discord.Interaction):
         total_sales += price
         # Si le coût n'a pas été enregistré (vieilles commandes), on estime grossièrement ou on ignore
         if cost:
-            # Le cost stocké est le prix brut API. Il faut le convertir en EUR pour la comparaison (x0.9 approx)
-            total_cost += cost * 0.9
+            # Le cost stocké est le prix brut API. Il faut le convertir en EUR pour la comparaison (x1.5 * 0.9 approx)
+            total_cost += cost * 1.5 * 0.9
 
     profit = total_sales - total_cost
 
@@ -541,6 +544,41 @@ class ConfirmPackView(discord.ui.View):
         await interaction.response.edit_message(content="❌ Pack annulé.", view=self)
 
 
+class ConfirmBuyView(discord.ui.View):
+    def __init__(self, user_id, price, service_key, country_key):
+        super().__init__(timeout=300)
+        self.user_id = user_id
+        self.price = price
+        self.service_key = service_key
+        self.country_key = country_key
+
+    @discord.ui.button(label="✅ Valider et Acheter", style=discord.ButtonStyle.success)
+    async def confirm(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        if interaction.user.id != self.user_id:
+            return
+
+        await interaction.response.defer()
+        # On désactive les boutons
+        self.clear_items()
+        await interaction.edit_original_response(
+            content="✅ **Lancement de l'achat...**", view=self
+        )
+
+        await execute_buy_logic(
+            interaction, self.service_key, self.country_key
+        )
+
+    @discord.ui.button(label="❌ Annuler", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            return
+
+        self.clear_items()
+        await interaction.response.edit_message(content="❌ Achat annulé.", view=self)
+
+
 async def execute_buy_logic(
     interaction: discord.Interaction,
     service_key: str,
@@ -596,7 +634,7 @@ async def execute_buy_logic(
                 break
         else:
             # Si erreur NO_NUMBERS, on peut arrêter
-            if "NO_NUMBERS" in str(temp_order.get("error", "")):
+            if temp_order.get("code") == "NO_NUMBERS":
                 break
             await asyncio.sleep(0.5)
 
@@ -1189,8 +1227,52 @@ class ServiceSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         service_key = self.values[0]
         await interaction.response.defer(ephemeral=True)
-        # Déclenche l'achat
-        await execute_buy_logic(interaction, service_key, self.country_key)
+
+        # 1. Récupération du prix pour confirmation
+        service_code = SERVICES[service_key]
+        country_id = COUNTRIES[self.country_key]
+
+        cost_price = await sms_api.get_price(service_code, country_id)
+
+        if cost_price is None:
+            return await interaction.followup.send(
+                f"⚠️ Stock épuisé ou erreur prix pour **{service_key.capitalize()}** ({self.country_key.capitalize()}). Réessayez plus tard.",
+                ephemeral=True,
+            )
+
+        final_price = calculate_selling_price(cost_price)
+
+        # 2. Affichage de la confirmation
+        embed = discord.Embed(
+            title="🛒 Confirmation d'Achat",
+            description="Détail de la commande :",
+            color=0x3498DB,
+        )
+        embed.add_field(name="📱 Service", value=service_key.capitalize(), inline=True)
+        embed.add_field(
+            name="🌍 Pays", value=self.country_key.capitalize(), inline=True
+        )
+        embed.add_field(name="💰 Prix", value=f"**{final_price:.2f}€**", inline=False)
+        embed.set_footer(text="Le débit sera effectué après confirmation.")
+
+        view = ConfirmBuyView(
+            interaction.user.id, final_price, service_key, self.country_key
+        )
+        
+        # Envoi en DM
+        try:
+            dm_channel = await interaction.user.create_dm()
+            await dm_channel.send(embed=embed, view=view)
+            await interaction.followup.send(
+                "📩 Confirmation envoyée en MP. Vérifiez vos messages !", ephemeral=True
+            )
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ Impossible de vous envoyer un MP. Ouvrez vos messages privés.",
+                ephemeral=True,
+            )
+        except Exception as e:
+            await interaction.followup.send(f"❌ Erreur : {e}", ephemeral=True)
 
 
 bot.run(TOKEN)
