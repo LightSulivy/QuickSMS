@@ -83,15 +83,8 @@ def init_db():
 def calculate_selling_price(api_price):
     if api_price is None:
         return None
-    # Formule : ((API * 1.5) * 1.3) * 0.9
-    return round(((api_price * 1.5) * 1.30) * 0.9, 2)
-
-
-def calculate_selling_price(api_price):
-    if api_price is None:
-        return None
-    # Formule : ((API * 1.5) * 1.3) * 0.9
-    return round(((api_price * 1.5) * 1.30) * 0.9, 2)
+    # Formule : ((API * 1.5) * 1.2) * 0.9
+    return round(((api_price * 1.5) * 1.20) * 0.9, 2)
 
 
 def get_balance(user_id):
