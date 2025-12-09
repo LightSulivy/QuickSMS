@@ -217,6 +217,7 @@ sms_api = SMSClient()
 @bot.event
 async def on_ready():
     await bot.tree.sync()
+    bot.add_view(DashboardView())
     if not daily_stats_task.is_running():
         daily_stats_task.start()
 
