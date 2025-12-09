@@ -76,6 +76,29 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # La colonne existe déjà
 
+    # Table Paramètres (Settings)
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS settings
+                 (key TEXT PRIMARY KEY, value TEXT)"""
+    )
+    # Initialisation de la marge par défaut si inexistante
+    c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('margin', '1.20')")
+
+    conn.commit()
+    conn.close()
+
+
+# --- GESTION MARGE ---
+def get_margin():
+    conn = sqlite3.connect("database.db")
+    res = conn.execute("SELECT value FROM settings WHERE key='margin'").fetchone()
+    conn.close()
+    return float(res[0]) if res else 1.20
+
+
+def update_margin_db(new_margin):
+    conn = sqlite3.connect("database.db")
+    conn.execute("UPDATE settings SET value=? WHERE key='margin'", (str(new_margin),))
     conn.commit()
     conn.close()
 
@@ -83,8 +106,10 @@ def init_db():
 def calculate_selling_price(api_price):
     if api_price is None:
         return None
-    # Formule : ((API * 1.5) * 1.2) * 0.9
-    return round(((api_price * 1.5) * 1.20) * 0.9, 2)
+    
+    margin = get_margin()
+    # Formule : ((API * 1.5) * margin) * 0.9
+    return round(((api_price * 1.5) * margin) * 0.9, 2)
 
 
 def get_balance(user_id):
@@ -328,6 +353,25 @@ async def deposit(
     )
     await interaction.followup.send(
         f"✅ Compte de {user.mention} crédité de {amount}€. Nouveau solde : {get_balance(user.id):.2f}€",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="setmargin", description="Changer la marge (Admin uniquement)")
+async def setmargin(interaction: discord.Interaction, margin: float):
+    if interaction.user.id not in ADMIN_IDS:
+        return await interaction.response.send_message(
+            "❌ Accès refusé.", ephemeral=True
+        )
+
+    if margin < 1.0:
+        return await interaction.response.send_message(
+            "⚠️ La marge doit être au moins de 1.0 (100%).", ephemeral=True
+        )
+
+    update_margin_db(margin)
+    await interaction.response.send_message(
+        f"✅ Marge mise à jour : **x{margin}** ({int((margin-1)*100)}% de bénéfice)",
         ephemeral=True,
     )
 
