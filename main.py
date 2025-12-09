@@ -581,7 +581,11 @@ class ConfirmPackView(discord.ui.View):
             return
 
         self.clear_items()
-        await interaction.response.edit_message(content="❌ Pack annulé.", view=self)
+        self.clear_items()
+        try:
+            await interaction.response.edit_message(content="❌ Pack annulé.", view=self)
+        except discord.NotFound:
+            await interaction.followup.send("❌ Pack annulé.", ephemeral=True)
 
 
 class ConfirmBuyView(discord.ui.View):
@@ -616,7 +620,11 @@ class ConfirmBuyView(discord.ui.View):
             return
 
         self.clear_items()
-        await interaction.response.edit_message(content="❌ Achat annulé.", view=self)
+        self.clear_items()
+        try:
+            await interaction.response.edit_message(content="❌ Achat annulé.", view=self)
+        except discord.NotFound:
+            await interaction.followup.send("❌ Achat annulé.", ephemeral=True)
 
 
 async def execute_buy_logic(
@@ -721,7 +729,12 @@ async def execute_buy_logic(
         )
         new_balance = get_balance(user_id)
 
-        msg = f"✅ **Commande validée !**\nService : **{service_name}** | Pays : **{country_name}**\nNuméro : `{order['phone']}`\n\nAttendez le code ci-dessous..."
+        # Formatage du numéro pour le Canada (Retirer le 1 au début)
+        display_phone = order['phone']
+        if country_key == "canada" and str(display_phone).startswith("1") and len(str(display_phone)) > 10:
+             display_phone = str(display_phone)[1:]
+
+        msg = f"✅ **Commande validée !**\nService : **{service_name}** | Pays : **{country_name}**\nNuméro : `{display_phone}`\n\nAttendez le code ci-dessous..."
         if next_steps:
             msg += f"\n\n🎁 **PACK EN COURS** : Prochaine étape -> {next_steps[0][0].capitalize()}"
 
@@ -992,9 +1005,11 @@ class OrderView(discord.ui.View):
                 error_message = "⏳ **Trop tôt pour annuler !**\nVeuillez attendre **2 minutes** après l'achat avant de pouvoir annuler.\nRéessayez dans quelques instants."
 
             await interaction.followup.send(error_message, ephemeral=True)
-            await interaction.followup.send(error_message, ephemeral=True)
-            # On remet le bouton actif
-            await interaction.edit_original_response(view=self)
+            try:
+                await interaction.edit_original_response(view=self)
+            except discord.NotFound:
+                # Si le message d'origine est introuvable (trop vieux), on envoie une nouvelle vue
+                await interaction.followup.send("⚠️ La vue a expiré, voici les nouveaux contrôles :", view=self, ephemeral=True)
 
     @discord.ui.button(
         label="⛔ Compte Banni",
