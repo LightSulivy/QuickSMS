@@ -266,9 +266,18 @@ async def services(interaction: discord.Interaction, country: app_commands.Choic
     
     country_id = COUNTRIES[selected_country_code]
     
+    # Optimisation : On lance toutes les requêtes en parallèle et non une par une
+    # Cela évite le timeout de Discord si l'API est lente
+    tasks = []
+    service_list = []
     for name, code in SERVICES.items():
-        # On récupère le prix indicatif pour le pays choisi
-        price_api = await sms_api.get_price(code, country_id)
+        service_list.append(name)
+        tasks.append(sms_api.get_price(code, country_id))
+    
+    results = await asyncio.gather(*tasks)
+    
+    for i, price_api in enumerate(results):
+        name = service_list[i]
         
         if price_api:
             # Calcul du prix client
