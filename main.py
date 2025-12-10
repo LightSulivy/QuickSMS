@@ -113,7 +113,7 @@ def update_margin_db(new_margin):
 def calculate_selling_price(api_price):
     if api_price is None:
         return None
-    
+
     margin = get_margin()
     # Formule : ((API * 1.3) * margin) * 0.9
     return round(((api_price * 1.3) * margin) * 0.9, 2)
@@ -178,17 +178,25 @@ class SMSClient:
             async with session.get(BASE_URL, params=params) as resp:
                 return await resp.text()
 
-    async def buy_number(self, service, country):
+    async def buy_number(self, service, country, user_info=None):
         # Réponse attendue : ACCESS_NUMBER:$ID:$NUMBER
         text = await self.request(
             "getNumber", {"service": service, "country": country, "freePrice": 1}
         )
-        print(f"DEBUG buy_number response: {text}")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        initiator = user_info if user_info else "Unknown"
+        print(
+            f"[{timestamp}] [Initiator: {initiator}] DEBUG buy_number response: {text}"
+        )
         if "ACCESS_NUMBER" in text:
             parts = text.split(":")
             return {"success": True, "id": parts[1], "phone": parts[2]}
         elif "NO_NUMBERS" in text:
-            return {"success": False, "error": "Plus de stock pour ce pays.", "code": "NO_NUMBERS"}
+            return {
+                "success": False,
+                "error": "Plus de stock pour ce pays.",
+                "code": "NO_NUMBERS",
+            }
         elif "NO_BALANCE" in text:
             return {
                 "success": False,
@@ -228,12 +236,14 @@ class SMSClient:
         text = await self.request("getStatus", {"id": activation_id})
         return text
 
-    async def cancel_order(self, activation_id):
+    async def cancel_order(self, activation_id, user_info=None):
         # On envoie le statut 8 (Annulation)
         # On attend la réponse pour savoir si ça a marché
         response = await self.request("setStatus", {"id": activation_id, "status": "8"})
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        initiator = user_info if user_info else "Unknown"
         print(
-            f"DEBUG ANNULATION - ID {activation_id} : {response}"
+            f"[{timestamp}] [Initiator: {initiator}] DEBUG ANNULATION - ID {activation_id} : {response}"
         )  # Pour voir ce qui se passe dans ta console
         return response
 
@@ -244,7 +254,7 @@ class HoodpayClient:
         self.base_url = "https://api.hoodpay.io/v1"
         self.headers = {
             "Authorization": f"Bearer {HOODPAY_API_KEY}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
 
     async def create_payment(self, amount, user_id, guild_id):
@@ -254,12 +264,9 @@ class HoodpayClient:
             "currency": "EUR",
             "description": f"Recharge QuickSMS - {amount}€",
             "businessId": HOODPAY_BS_ID,
-            "metadata": {
-                "user_id": str(user_id),
-                "guild_id": str(guild_id)
-            }
+            "metadata": {"user_id": str(user_id), "guild_id": str(guild_id)},
         }
-        
+
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=self.headers) as resp:
                 if resp.status == 200 or resp.status == 201:
@@ -270,8 +277,10 @@ class HoodpayClient:
                     print(f"Erreur Hoodpay ({resp.status}): {text}")
                     return None
 
+
 # --- WEBHOOK SERVER ---
 from aiohttp import web
+
 
 async def handle_webhook(request):
     # Sécurité : Vérifier le secret si possible (Hoodpay envoie souvent une signature)
@@ -279,35 +288,37 @@ async def handle_webhook(request):
     try:
         data = await request.json()
         print(f"WEBHOOK REÇU : {data}")
-        
+
         event_type = data.get("type")
         if event_type == "payment.succeeded":
             payload = data.get("data", {})
             metadata = payload.get("metadata", {})
             user_id = int(metadata.get("user_id", 0))
             amount = float(payload.get("amount", 0))
-            
+
             if user_id > 0:
                 print(f"✅ Paiement validé pour {user_id} : +{amount}€")
                 update_balance(user_id, amount)
-                
+
                 # Notification utilisateur (Optionnel, requiert d'avoir le bot accessible)
-                # On ne peut pas facilement await bot.fetch_user ici sans contexte, 
+                # On ne peut pas facilement await bot.fetch_user ici sans contexte,
                 # mais le solde est mis à jour.
-                
+
         return web.Response(text="OK")
     except Exception as e:
         print(f"Erreur Webhook: {e}")
         return web.Response(status=500, text="Error")
 
+
 async def start_webhook_server():
     app = web.Application()
-    app.router.add_post('/webhook', handle_webhook)
+    app.router.add_post("/webhook", handle_webhook)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', WEBHOOK_PORT)
+    site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT)
     await site.start()
     print(f"🌍 Serveur Webhook démarré sur le port {WEBHOOK_PORT}")
+
 
 # --- LOGIQUE DU BOT ---
 init_db()
@@ -322,7 +333,7 @@ async def on_ready():
     bot.add_view(DashboardView())
     if not daily_stats_task.is_running():
         daily_stats_task.start()
-        
+
     # Démarrage du serveur Webhook
     if HOODPAY_API_KEY:
         await start_webhook_server()
@@ -442,25 +453,43 @@ async def deposit(
     )
 
 
-@bot.tree.command(name="recharge", description="Recharger votre solde (Carte/Crypto via Hoodpay)")
+@bot.tree.command(
+    name="recharge", description="Recharger votre solde (Carte/Crypto via Hoodpay)"
+)
 async def recharge(interaction: discord.Interaction, amount: float):
     if amount < 1:
         return await interaction.response.send_message("❌ Minimum 1€.", ephemeral=True)
-        
+
     await interaction.response.defer(ephemeral=True)
-    
+
     if not HOODPAY_API_KEY:
-        return await interaction.followup.send("❌ Les paiements sont désactivés pour le moment (Config manquante).", ephemeral=True)
-        
-    url = await hoodpay_api.create_payment(amount, interaction.user.id, interaction.guild_id)
-    
+        return await interaction.followup.send(
+            "❌ Les paiements sont désactivés pour le moment (Config manquante).",
+            ephemeral=True,
+        )
+
+    url = await hoodpay_api.create_payment(
+        amount, interaction.user.id, interaction.guild_id
+    )
+
     if url:
-        embed = discord.Embed(title="💳 Recharger mon compte", description=f"Cliquez sur le lien ci-dessous pour payer **{amount}€** via Hoodpay (CB / Crypto).", color=0x5865F2)
-        embed.add_field(name="Lien de paiement", value=f"[👉 Payer maintenant]({url})", inline=False)
-        embed.set_footer(text="Votre solde sera crédité automatiquement après validation.")
+        embed = discord.Embed(
+            title="💳 Recharger mon compte",
+            description=f"Cliquez sur le lien ci-dessous pour payer **{amount}€** via Hoodpay (CB / Crypto).",
+            color=0x5865F2,
+        )
+        embed.add_field(
+            name="Lien de paiement", value=f"[👉 Payer maintenant]({url})", inline=False
+        )
+        embed.set_footer(
+            text="Votre solde sera crédité automatiquement après validation."
+        )
         await interaction.followup.send(embed=embed, ephemeral=True)
     else:
-        await interaction.followup.send("❌ Erreur lors de la création du paiement. Réessayez plus tard.", ephemeral=True)
+        await interaction.followup.send(
+            "❌ Erreur lors de la création du paiement. Réessayez plus tard.",
+            ephemeral=True,
+        )
 
 
 @bot.tree.command(name="setmargin", description="Changer la marge (Admin uniquement)")
@@ -627,9 +656,7 @@ async def execute_pack_logic(interaction: discord.Interaction):
         embed.add_field(
             name="1. Whatsapp (France)", value=f"{price1:.2f}€", inline=True
         )
-        embed.add_field(
-            name="2. Telegram (UK)", value=f"{price2:.2f}€", inline=True
-        )
+        embed.add_field(name="2. Telegram (UK)", value=f"{price2:.2f}€", inline=True)
         embed.add_field(
             name="💰 PRIX TOTAL", value=f"**{total_price:.2f}€**", inline=False
         )
@@ -685,7 +712,9 @@ class ConfirmPackView(discord.ui.View):
 
         self.clear_items()
         try:
-            await interaction.response.edit_message(content="❌ Pack annulé.", view=self)
+            await interaction.response.edit_message(
+                content="❌ Pack annulé.", view=self
+            )
         except discord.NotFound:
             await interaction.followup.send("❌ Pack annulé.", ephemeral=True)
 
@@ -712,9 +741,7 @@ class ConfirmBuyView(discord.ui.View):
             content="✅ **Lancement de l'achat...**", view=self
         )
 
-        await execute_buy_logic(
-            interaction, self.service_key, self.country_key
-        )
+        await execute_buy_logic(interaction, self.service_key, self.country_key)
 
     @discord.ui.button(label="❌ Annuler", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -724,7 +751,9 @@ class ConfirmBuyView(discord.ui.View):
         self.clear_items()
         self.clear_items()
         try:
-            await interaction.response.edit_message(content="❌ Achat annulé.", view=self)
+            await interaction.response.edit_message(
+                content="❌ Achat annulé.", view=self
+            )
         except discord.NotFound:
             await interaction.followup.send("❌ Achat annulé.", ephemeral=True)
 
@@ -770,13 +799,17 @@ async def execute_buy_logic(
     order = None
 
     for i in range(max_retries):
-        temp_order = await sms_api.buy_number(service_code, country_id)
+        temp_order = await sms_api.buy_number(
+            service_code, country_id, user_info=f"User {user_id}"
+        )
 
         if temp_order["success"]:
             # Vérif doublons
             if is_number_used(temp_order["phone"], service_name):
                 print(f"DOUBLON REJETÉ: {temp_order['phone']}")
-                await sms_api.cancel_order(temp_order["id"])
+                await sms_api.cancel_order(
+                    temp_order["id"], user_info=f"User {user_id}"
+                )
                 await asyncio.sleep(1)
                 continue
             else:
@@ -832,9 +865,13 @@ async def execute_buy_logic(
         new_balance = get_balance(user_id)
 
         # Formatage du numéro pour le Canada (Retirer le 1 au début)
-        display_phone = order['phone']
-        if country_key == "canada" and str(display_phone).startswith("1") and len(str(display_phone)) > 10:
-             display_phone = str(display_phone)[1:]
+        display_phone = order["phone"]
+        if (
+            country_key == "canada"
+            and str(display_phone).startswith("1")
+            and len(str(display_phone)) > 10
+        ):
+            display_phone = str(display_phone)[1:]
 
         msg = f"✅ **Commande validée !**\nService : **{service_name}** | Pays : **{country_name}**\nNuméro : `{display_phone}`\n\nAttendez le code ci-dessous..."
         if next_steps:
@@ -927,7 +964,7 @@ async def check_sms_loop(order_id, channel, view, dm_message):
     elif not view.is_cancelled and not view.process_finished:
         if not received_codes:
             # Timeout sans AUCUN code reçu -> On annule et rembourse
-            await sms_api.cancel_order(order_id)
+            await sms_api.cancel_order(order_id, user_info=f"User {view.user_id}")
             await refund_user_channel(
                 view.user_id, view.price, order_id, channel, reason="Temps écoulé"
             )
@@ -1077,7 +1114,9 @@ class OrderView(discord.ui.View):
         await interaction.edit_original_response(view=self)
 
         # 1. On tente d'annuler chez SMS-Activate D'ABORD
-        api_response = await sms_api.cancel_order(self.order_id)
+        api_response = await sms_api.cancel_order(
+            self.order_id, user_info=f"User {self.user_id}"
+        )
 
         # 2. On vérifie la réponse du fournisseur
         if (
@@ -1111,7 +1150,11 @@ class OrderView(discord.ui.View):
                 await interaction.edit_original_response(view=self)
             except discord.NotFound:
                 # Si le message d'origine est introuvable (trop vieux), on envoie une nouvelle vue
-                await interaction.followup.send("⚠️ La vue a expiré, voici les nouveaux contrôles :", view=self, ephemeral=True)
+                await interaction.followup.send(
+                    "⚠️ La vue a expiré, voici les nouveaux contrôles :",
+                    view=self,
+                    ephemeral=True,
+                )
 
     @discord.ui.button(
         label="⛔ Compte Banni",
@@ -1138,9 +1181,14 @@ class OrderView(discord.ui.View):
         await interaction.edit_original_response(view=self)
 
         # 1. Tentative d'annulation chez SMS-Activate (Best effort)
-        api_response = await sms_api.cancel_order(self.order_id)
+        api_response = await sms_api.cancel_order(
+            self.order_id, user_info=f"User {self.user_id}"
+        )
         # On log mais on ignore l'erreur si ça rate (le remboursement auto se fera plus tard côté API)
-        print(f"Cancel Blocked Number response: {api_response}")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(
+            f"[{timestamp}] [Initiator: User {self.user_id}] Cancel Blocked Number response: {api_response}"
+        )
 
         # 2. On procède DIRECTEMENT au remboursement interne et au changement de numéro
         self.is_cancelled = True
@@ -1205,7 +1253,7 @@ async def setup_dashboard(guild):
         description="Bienvenue ! Utilisez les boutons ci-dessous pour commander.",
         color=0x3498DB,
     )
-    
+
     await channel.send(embed=embed, view=view)
 
 
@@ -1254,7 +1302,8 @@ class DashboardView(discord.ui.View):
     ):
         balance = get_balance(interaction.user.id)
         await interaction.response.send_message(
-            f"💰 **Votre solde : {balance:.2f}€**\nSi vous souhaitez recharger, utilisez la commande `/recharge`.", ephemeral=True
+            f"💰 **Votre solde : {balance:.2f}€**\nSi vous souhaitez recharger, utilisez la commande `/recharge`.",
+            ephemeral=True,
         )
 
     @discord.ui.button(
@@ -1298,7 +1347,7 @@ class CountrySelect(discord.ui.Select):
         if self.mode == "buy":
             await interaction.response.edit_message(
                 content=f"📱 **Pays : {country_key.capitalize()}**. Choisissez le service :",
-                view=ServiceSelectView(country_key)
+                view=ServiceSelectView(country_key),
             )
         else:
             # Mode Prix
@@ -1334,7 +1383,9 @@ class CountrySelect(discord.ui.Select):
 
             embed.description = description
             embed.set_footer(text="Prix sujets à variation (Offre/Demande)")
-            await interaction.edit_original_response(content=None, embed=embed, view=None)
+            await interaction.edit_original_response(
+                content=None, embed=embed, view=None
+            )
 
 
 class ServiceSelectView(discord.ui.View):
@@ -1393,26 +1444,28 @@ class ServiceSelect(discord.ui.Select):
         view = ConfirmBuyView(
             interaction.user.id, final_price, service_key, self.country_key
         )
-        
+
         # Envoi en DM
         try:
             dm_channel = await interaction.user.create_dm()
             await dm_channel.send(embed=embed, view=view)
-            
+
             # On met à jour le message éphémère pour dire que c'est envoyé
             await interaction.edit_original_response(
                 content="📩 Confirmation envoyée en MP. Vérifiez vos messages !",
                 embed=None,
-                view=None
+                view=None,
             )
         except discord.Forbidden:
             await interaction.edit_original_response(
                 content="❌ Impossible de vous envoyer un MP. Ouvrez vos messages privés.",
                 embed=None,
-                view=None
+                view=None,
             )
         except Exception as e:
-            await interaction.edit_original_response(content=f"❌ Erreur : {e}", embed=None, view=None)
+            await interaction.edit_original_response(
+                content=f"❌ Erreur : {e}", embed=None, view=None
+            )
 
 
 bot.run(TOKEN)
