@@ -38,6 +38,7 @@ SERVICES = {
     "facebook": "fb",
     "instagram": "ig",
     "tiktok": "lf",
+    "uber": "ub",
 }
 
 COUNTRIES = {"france": "78", "canada": "36", "united_kingdom": "16"}
@@ -209,7 +210,7 @@ class SMSClient:
         try:
             # On retourne sur getPrices pour avoir le prix Réel (et pas moyen/stats)
             response = await self.request(
-                "getPrices", {"service": service, "country": country, "freePrice": 0}
+                "getPrices", {"service": service, "country": country, "freePrice": 1}
             )
 
             # Pas de print global pour éviter le spam, on affiche juste le résultat trouvé
@@ -609,6 +610,8 @@ async def services(
                 emoji = "🟢"
             elif "telegram" in svc_name.lower():
                 emoji = "🔵"
+            elif "uber" in svc_name.lower():
+                emoji = "🚗"
 
             description += f"{emoji} **{svc_name}** : {final_price:.2f}€\n"
         else:
@@ -664,9 +667,12 @@ async def execute_pack_logic(interaction: discord.Interaction):
 
         view = ConfirmPackView(interaction.user.id, price1, steps)
         await dm_channel.send(embed=embed, view=view)
-        await interaction.followup.send(
-            "📩 Confirmation envoyée en MP. Vérifiez vos messages !", ephemeral=True
-        )
+        if interaction.guild:
+            await interaction.followup.send(
+                "📩 Confirmation envoyée en MP. Vérifiez vos messages !", ephemeral=True
+            )
+        else:
+            await interaction.followup.send("📩 Confirmation envoyée !", ephemeral=True)
 
     except discord.Forbidden:
         await interaction.followup.send(
@@ -878,10 +884,11 @@ async def execute_buy_logic(
             msg += f"\n\n🎁 **PACK EN COURS** : Prochaine étape -> {next_steps[0][0].capitalize()}"
 
         dm_message = await dm_channel.send(msg, view=view)
-        # Message éphémère de confirmation
-        await interaction.followup.send(
-            f"✅ Numéro acheté ! Regardez vos MP.", ephemeral=True
-        )
+        # Message éphémère de confirmation (Seulement si sur un serveur)
+        if interaction.guild:
+            await interaction.followup.send(
+                f"✅ Numéro acheté ! Regardez vos MP.", ephemeral=True
+            )
 
         # Lancement du check
         asyncio.create_task(check_sms_loop(order["id"], dm_channel, view, dm_message))
@@ -918,13 +925,13 @@ async def check_sms_loop(order_id, channel, view, dm_message):
 
                 # On active les boutons Finish et Retry, on désactive Cancel
                 for child in view.children:
-                    if (
-                        child.custom_id == "btn_finish"
-                        or child.custom_id == "btn_retry"
-                    ):
-                        child.disabled = False
-                    if child.custom_id == "btn_cancel":
-                        child.disabled = True
+                    if child.custom_id:
+                        if child.custom_id.startswith(
+                            "btn_finish"
+                        ) or child.custom_id.startswith("btn_retry"):
+                            child.disabled = False
+                        if child.custom_id.startswith("btn_cancel"):
+                            child.disabled = True
 
                 # On envoie le code
                 await channel.send(
@@ -1031,6 +1038,14 @@ class OrderView(discord.ui.View):
         self.code_received = False
         self.next_steps = next_steps
 
+        # --- FIX: IDs UNIQUES POUR LA PERSISTANCE ---
+        # Pour que bot.add_view() fonctionne avec plusieurs commandes,
+        # il faut que chaque bouton ait un custom_id unique.
+        for item in self.children:
+            if item.custom_id:
+                # On ajoute l'ID de la commande au custom_id de base (ex: btn_finish_12345)
+                item.custom_id = f"{item.custom_id}_{self.order_id}"
+
     @discord.ui.button(
         label="Terminer (Validé)",
         style=discord.ButtonStyle.success,
@@ -1052,7 +1067,6 @@ class OrderView(discord.ui.View):
             "✅ Commande terminée avec succès.", ephemeral=True
         )
 
-        # Gestion de la suite du Pack (si applicable)
         if self.next_steps:
             # On prend le premier élément
             next_svc, next_ctry = self.next_steps[0]
@@ -1222,6 +1236,27 @@ class OrderView(discord.ui.View):
                 next_steps=self.next_steps,
             )
 
+    @discord.ui.button(
+        label="🔄 Prendre un autre",
+        style=discord.ButtonStyle.primary,
+        emoji="🛒",
+        row=1,
+    )
+    async def rebuy(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message(
+                "Ce n'est pas votre commande !", ephemeral=True
+            )
+
+        if not self.service_key or not self.country_key:
+            return await interaction.response.send_message(
+                "❌ Impossible de recommander (Info manquante).", ephemeral=True
+            )
+
+        await interaction.response.defer()
+        # On relance direct le processus d'achat
+        await execute_buy_logic(interaction, self.service_key, self.country_key)
+
 
 async def setup_dashboard(guild):
     channel_name = "commander-num"
@@ -1376,6 +1411,8 @@ class CountrySelect(discord.ui.Select):
                         emoji = "🟢"
                     elif "telegram" in svc_name.lower():
                         emoji = "🔵"
+                    elif "uber" in svc_name.lower():
+                        emoji = "🚗"
 
                     description += f"{emoji} **{svc_name}** : {final_price:.2f}€\n"
                 else:
@@ -1451,8 +1488,12 @@ class ServiceSelect(discord.ui.Select):
             await dm_channel.send(embed=embed, view=view)
 
             # On met à jour le message éphémère pour dire que c'est envoyé
+            msg_confirm = "📩 Confirmation envoyée en MP. Vérifiez vos messages !"
+            if not interaction.guild:
+                msg_confirm = "📩 Confirmation générée :"
+
             await interaction.edit_original_response(
-                content="📩 Confirmation envoyée en MP. Vérifiez vos messages !",
+                content=msg_confirm,
                 embed=None,
                 view=None,
             )
