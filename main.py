@@ -555,10 +555,23 @@ async def stats(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="balance", description="Voir mon solde")
-async def balance(interaction: discord.Interaction):
+@bot.tree.command(name="balance", description="Voir solde (Admin: voir celui d'un autre)")
+@app_commands.describe(user="Utilisateur dont vous voulez voir le solde (Admin seulement)")
+async def balance(interaction: discord.Interaction, user: discord.Member = None):
+    target_user = interaction.user
+    message_prefix = "💰 Votre solde :"
+
+    if user:
+        if interaction.user.id not in ADMIN_IDS:
+             return await interaction.response.send_message(
+                "❌ Vous n'avez pas la permission de voir le solde d'un autre utilisateur.",
+                ephemeral=True
+            )
+        target_user = user
+        message_prefix = f"💰 Solde de {target_user.mention} :"
+
     await interaction.response.send_message(
-        f"💰 Votre solde : {get_balance(interaction.user.id):.2f}€", ephemeral=True
+        f"{message_prefix} {get_balance(target_user.id):.2f}€", ephemeral=True
     )
 
 

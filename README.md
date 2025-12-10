@@ -41,7 +41,7 @@ _Ces commandes sont réservées aux IDs définis dans la configuration._
 
 _Accessibles à tous, mais le Dashboard est recommandé._
 
-- **/balance** : Affiche le solde actuel de l'utilisateur.
+- **/balance [user]** : Affiche le solde actuel. (Admins : voir solde d'un autre membre).
 - **/services [pays]** : Liste les services et les prix pour un pays donné.
 
 ---
