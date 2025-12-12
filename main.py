@@ -20,9 +20,7 @@ BASE_URL = "https://api.sms-activate.org/stubs/handler_api.php"
 ADMIN_IDS = [
     227390137892339722,
     1300246463951011981,
-    1186309476626747422,
     1279003722172862465,
-    791853648224190474,
 ]
 
 # --- MAPPING (Pour simplifier la vie de tes clients) ---
