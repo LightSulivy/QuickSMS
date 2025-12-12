@@ -92,11 +92,30 @@ def init_db():
     # Initialisation de la marge par défaut si inexistante
     c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('margin', '1.20')")
 
+    # Table Admins
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS admins
+                 (discord_id INTEGER PRIMARY KEY, added_at TEXT)"""
+    )
+
+    # Table Dépôts (Historique rechargements)
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS deposits
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, discord_id INTEGER, 
+                  amount REAL, source TEXT, created_at TEXT)"""
+    )
+
+    # Migration : On ajoute les admins hardcodés dans la DB pour qu'ils y soient par défaut
+    for admin_id in ADMIN_IDS:
+        c.execute(
+            "INSERT OR IGNORE INTO admins (discord_id, added_at) VALUES (?, ?)",
+            (admin_id, str(datetime.now())),
+        )
+
     conn.commit()
     conn.close()
 
 
-# --- GESTION MARGE ---
 def get_margin():
     conn = sqlite3.connect("database.db")
     res = conn.execute("SELECT value FROM settings WHERE key='margin'").fetchone()
@@ -141,6 +160,16 @@ def update_balance(user_id, amount):
     conn.close()
 
 
+def add_deposit_log(user_id, amount, source):
+    conn = sqlite3.connect("database.db")
+    conn.execute(
+        "INSERT INTO deposits (discord_id, amount, source, created_at) VALUES (?, ?, ?, ?)",
+        (user_id, amount, source, str(datetime.now())),
+    )
+    conn.commit()
+    conn.close()
+
+
 def is_number_used(phone, service):
     conn = sqlite3.connect("database.db")
     # On regarde si ce numéro a déjà une commande complétée ou en attente pour ce service
@@ -166,6 +195,34 @@ def block_number_db(phone, service):
         "INSERT OR IGNORE INTO blocked_numbers (phone, service, reported_at) VALUES (?, ?, ?)",
         (phone, service, str(datetime.now())),
     )
+    conn.commit()
+    conn.close()
+
+
+def is_user_admin(user_id):
+    # On vérifie dans la liste hardcodée (backup) OU dans la DB
+    if user_id in ADMIN_IDS:
+        return True
+
+    conn = sqlite3.connect("database.db")
+    res = conn.execute("SELECT 1 FROM admins WHERE discord_id=?", (user_id,)).fetchone()
+    conn.close()
+    return res is not None
+
+
+def add_new_admin_db(user_id):
+    conn = sqlite3.connect("database.db")
+    conn.execute(
+        "INSERT OR IGNORE INTO admins (discord_id, added_at) VALUES (?, ?)",
+        (user_id, str(datetime.now())),
+    )
+    conn.commit()
+    conn.close()
+
+
+def remove_admin_db(user_id):
+    conn = sqlite3.connect("database.db")
+    conn.execute("DELETE FROM admins WHERE discord_id=?", (user_id,))
     conn.commit()
     conn.close()
 
@@ -300,6 +357,7 @@ async def handle_webhook(request):
             if user_id > 0:
                 print(f"✅ Paiement validé pour {user_id} : +{amount}€")
                 update_balance(user_id, amount)
+                add_deposit_log(user_id, amount, "Hoodpay")
 
                 # Notification utilisateur (Optionnel, requiert d'avoir le bot accessible)
                 # On ne peut pas facilement await bot.fetch_user ici sans contexte,
@@ -436,7 +494,7 @@ async def daily_stats_task():
 async def deposit(
     interaction: discord.Interaction, amount: float, user: discord.Member
 ):
-    if interaction.user.id not in ADMIN_IDS:
+    if not is_user_admin(interaction.user.id):
         return await interaction.response.send_message(
             "❌ Vous n'avez pas la permission d'utiliser cette commande.",
             ephemeral=True,
@@ -445,6 +503,7 @@ async def deposit(
     await interaction.response.defer(ephemeral=True)
 
     update_balance(user.id, amount)
+    add_deposit_log(user.id, amount, f"Admin Deposit by {interaction.user.id}")
     print(
         f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ADMIN LOG: {interaction.user} (ID: {interaction.user.id}) credited {amount}€ to {user} (ID: {user.id})"
     )
@@ -458,6 +517,13 @@ async def deposit(
     name="recharge", description="Recharger votre solde (Carte/Crypto via Hoodpay)"
 )
 async def recharge(interaction: discord.Interaction, amount: float):
+    # --- DESACTIVATION TEMPORAIRE ---
+    if not is_user_admin(interaction.user.id):
+        return await interaction.response.send_message(
+            "⚠️ Cette commande est désactivée pour le moment. Veuillez contacter un administrateur pour recharger.",
+            ephemeral=True,
+        )
+
     if amount < 1:
         return await interaction.response.send_message("❌ Minimum 1€.", ephemeral=True)
 
@@ -495,7 +561,7 @@ async def recharge(interaction: discord.Interaction, amount: float):
 
 @bot.tree.command(name="setmargin", description="Changer la marge (Admin uniquement)")
 async def setmargin(interaction: discord.Interaction, margin: float):
-    if interaction.user.id not in ADMIN_IDS:
+    if not is_user_admin(interaction.user.id):
         return await interaction.response.send_message(
             "❌ Accès refusé.", ephemeral=True
         )
@@ -516,7 +582,7 @@ async def setmargin(interaction: discord.Interaction, margin: float):
     name="stats", description="Voir les bénéfices du jour (Admin uniquement)"
 )
 async def stats(interaction: discord.Interaction):
-    if interaction.user.id not in ADMIN_IDS:
+    if not is_user_admin(interaction.user.id):
         return await interaction.response.send_message(
             "❌ Accès refusé.", ephemeral=True
         )
@@ -553,6 +619,187 @@ async def stats(interaction: discord.Interaction):
     embed.set_footer(text=f"{len(rows)} commandes terminées aujourd'hui.")
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(
+    name="history", description="Voir l'historique d'un membre (Admin uniquement)"
+)
+@app_commands.choices(
+    filter=[
+        app_commands.Choice(name="Commandes (Tout)", value="all"),
+        app_commands.Choice(name="Commandes (Validées)", value="completed"),
+        app_commands.Choice(name="Dépôts", value="deposits"),
+    ]
+)
+async def history(
+    interaction: discord.Interaction,
+    user: discord.User,
+    filter: app_commands.Choice[str] = None,
+):
+    if not is_user_admin(interaction.user.id):
+        return await interaction.response.send_message(
+            "❌ Accès refusé.", ephemeral=True
+        )
+
+    await interaction.response.defer(ephemeral=True)
+
+    filter_value = filter.value if filter else "all"
+
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+
+    rows = []
+    is_deposit = False
+
+    if filter_value == "deposits":
+        is_deposit = True
+        cursor.execute(
+            "SELECT amount, source, created_at FROM deposits WHERE discord_id=? ORDER BY created_at DESC LIMIT 20",
+            (user.id,),
+        )
+        rows = cursor.fetchall()
+    elif filter_value == "completed":
+        cursor.execute(
+            "SELECT order_id, phone, price, status, service, created_at FROM orders WHERE discord_id=? AND status='COMPLETED' ORDER BY created_at DESC LIMIT 20",
+            (user.id,),
+        )
+        rows = cursor.fetchall()
+    else:  # all
+        cursor.execute(
+            "SELECT order_id, phone, price, status, service, created_at FROM orders WHERE discord_id=? ORDER BY created_at DESC LIMIT 20",
+            (user.id,),
+        )
+        rows = cursor.fetchall()
+
+    conn.close()
+
+    user_balance = get_balance(user.id)
+
+    if not rows:
+        return await interaction.followup.send(
+            f"ℹ️ Aucun historique trouvé ({filter_value}) pour {user.mention}. (Solde: {user_balance:.2f}€)",
+            ephemeral=True,
+        )
+
+    embed = discord.Embed(
+        title=f"📜 Historique de {user.name} ({filter_value.capitalize()})",
+        description=f"**ID:** {user.id}\n**Solde:** {user_balance:.2f}€\n**Derniers éléments (max 20):**",
+        color=0x9B59B6,
+    )
+
+    if is_deposit:
+        for amount, source, created_at in rows:
+            embed.add_field(
+                name=f"💰 +{amount}€",
+                value=f"**Source:** {source}\n**Date:** {created_at}",
+                inline=False,
+            )
+    else:
+        for order_id, phone, price, status, service, created_at in rows:
+            # On essaie de parser la date pour faire joli
+            date_str = created_at
+            try:
+                dt = datetime.strptime(created_at, "%Y-%m-%d %H:%M:%S.%f")
+                date_str = dt.strftime("%d/%m %H:%M")
+            except:
+                try:
+                    dt = datetime.strptime(created_at, "%Y-%m-%d %H:%M:%S")
+                    date_str = dt.strftime("%d/%m %H:%M")
+                except:
+                    pass  # On garde le format brut si échec
+
+            status_emoji = (
+                "✅"
+                if status == "COMPLETED"
+                else "❌" if status in ["REFUNDED", "CANCELLED"] else "⏳"
+            )
+
+            embed.add_field(
+                name=f"{status_emoji} {date_str} - {service}",
+                value=f"**Prix:** {price}€ | **Tel:** `{phone}`\n**Status:** {status}",
+                inline=False,
+            )
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(
+    name="addadmin", description="Ajouter un administrateur (Admin uniquement)"
+)
+async def addadmin(interaction: discord.Interaction, user: discord.User):
+    if not is_user_admin(interaction.user.id):
+        return await interaction.response.send_message(
+            "❌ Accès refusé.", ephemeral=True
+        )
+
+    add_new_admin_db(user.id)
+    # On met à jour la liste en mémoire pour éviter d'attendre le redémarrage
+    if user.id not in ADMIN_IDS:
+        ADMIN_IDS.append(user.id)
+
+    await interaction.response.send_message(
+        f"✅ **{user.name}** a été ajouté en tant qu'administrateur.", ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="listadmins", description="Liste tous les administrateurs (Admin uniquement)"
+)
+async def listadmins(interaction: discord.Interaction):
+    if not is_user_admin(interaction.user.id):
+        return await interaction.response.send_message(
+            "❌ Accès refusé.", ephemeral=True
+        )
+
+    conn = sqlite3.connect("database.db")
+    rows = conn.execute("SELECT discord_id, added_at FROM admins").fetchall()
+    conn.close()
+
+    description = ""
+    for discord_id, added_at in rows:
+        description += f"• <@{discord_id}> (ID: {discord_id}) - Ajouté le: {added_at}\n"
+
+    # Ajout des admins hardcodés s'ils ne sont pas dans la DB (cas rare avec la migration, mais on sait jamais)
+    for admin_id in ADMIN_IDS:
+        found = False
+        for row in rows:
+            if row[0] == admin_id:
+                found = True
+                break
+        if not found:
+            description += (
+                f"• <@{admin_id}> (ID: {admin_id}) - *Admin Config (Hardcodé)*\n"
+            )
+
+    embed = discord.Embed(
+        title="🛡️ Liste des Administrateurs",
+        description=description if description else "Aucun admin en DB.",
+        color=0xE67E22,
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(
+    name="removeadmin", description="Supprimer un administrateur (Admin uniquement)"
+)
+async def removeadmin(interaction: discord.Interaction, user: discord.User):
+    if not is_user_admin(interaction.user.id):
+        return await interaction.response.send_message(
+            "❌ Accès refusé.", ephemeral=True
+        )
+
+    if user.id == interaction.user.id:
+        return await interaction.response.send_message(
+            "❌ Vous ne pouvez pas vous supprimer vous-même.", ephemeral=True
+        )
+
+    remove_admin_db(user.id)
+    if user.id in ADMIN_IDS:
+        ADMIN_IDS.remove(user.id)
+
+    await interaction.response.send_message(
+        f"✅ **{user.name}** a été retiré des administrateurs.", ephemeral=True
+    )
 
 
 @bot.tree.command(name="balance", description="Voir mon solde")
@@ -1337,7 +1584,7 @@ class DashboardView(discord.ui.View):
     ):
         balance = get_balance(interaction.user.id)
         await interaction.response.send_message(
-            f"💰 **Votre solde : {balance:.2f}€**\nSi vous souhaitez recharger, utilisez la commande `/recharge`.",
+            f"💰 **Votre solde : {balance:.2f}€**",
             ephemeral=True,
         )
 
