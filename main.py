@@ -805,7 +805,7 @@ async def removeadmin(interaction: discord.Interaction, user: discord.User):
 @bot.tree.command(name="balance", description="Voir mon solde")
 async def balance(interaction: discord.Interaction):
     await interaction.response.send_message(
-        f"💰 Votre solde : {get_balance(interaction.user.id):.2f}€", ephemeral=True
+        f"{message_prefix} {get_balance(target_user.id):.2f}€", ephemeral=True
     )
 
 
@@ -1372,7 +1372,11 @@ class OrderView(discord.ui.View):
 
         # On désactive le bouton pour éviter le double-clic
         button.disabled = True
-        await interaction.edit_original_response(view=self)
+        try:
+            await interaction.edit_original_response(view=self)
+        except discord.NotFound:
+            # Le message a peut-être été supprimé, mais on continue l'annulation
+            pass
 
         # 1. On tente d'annuler chez SMS-Activate D'ABORD
         api_response = await sms_api.cancel_order(
@@ -1439,7 +1443,10 @@ class OrderView(discord.ui.View):
 
         await interaction.response.defer()
         button.disabled = True
-        await interaction.edit_original_response(view=self)
+        try:
+            await interaction.edit_original_response(view=self)
+        except discord.NotFound:
+            pass
 
         # 1. Tentative d'annulation chez SMS-Activate (Best effort)
         api_response = await sms_api.cancel_order(

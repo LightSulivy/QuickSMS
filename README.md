@@ -44,13 +44,12 @@ _Ces commandes sont réservées aux administrateurs (définis dans la base de do
 
 _Accessibles à tous les membres. Le Dashboard est généralement suffisant._
 
-| Commande                 | Description                                                                    |
+<<<<<<< HEAD
+| Commande | Description |
 | :----------------------- | :----------------------------------------------------------------------------- |
-| **`/balance`**           | Affiche le solde actuel de votre compte.                                       |
+| **`/balance`** | Affiche le solde actuel de votre compte. |
 | **`/recharge <amount>`** | Génère un lien de paiement (Carte/Crypto) via Hoodpay pour créditer le compte. |
-| **`/services [pays]`**   | Affiche la liste des services disponibles et leurs prix en temps réel.         |
-
----
+| **`/services [pays]`** | Affiche la liste des services disponibles et leurs prix en temps réel. |
 
 ## 📱 Dashboard Client
 
