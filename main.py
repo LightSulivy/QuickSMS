@@ -802,7 +802,68 @@ async def stats(interaction: discord.Interaction):
     embed.add_field(name="Bénéfice Net", value=f"{profit:.2f}€", inline=False)
     embed.set_footer(text=f"{len(rows)} commandes terminées aujourd'hui.")
 
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    view = StatsView(today)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+class StatsView(discord.ui.View):
+    def __init__(self, date_str):
+        super().__init__(timeout=60)
+        self.date_str = date_str
+
+    @discord.ui.button(
+        label="📜 Voir détails", style=discord.ButtonStyle.secondary, emoji="🔎"
+    )
+    async def details_btn(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT order_id, discord_id, service, price, status, created_at FROM orders WHERE created_at LIKE ? ORDER BY created_at DESC",
+            (f"{self.date_str}%",),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        if not rows:
+            return await interaction.followup.send(
+                "❌ Aucune commande trouvée pour cette date.", ephemeral=True
+            )
+
+        # Construction du rapport
+        lines = [f"**Commandes du {self.date_str}**"]
+        for row in rows:
+            oid, uid, svc, price, status, created = row
+            # Format heure
+            try:
+                dt = datetime.strptime(created, "%Y-%m-%d %H:%M:%S")
+                time_str = dt.strftime("%H:%M")
+            except:
+                time_str = "??"
+
+            icon = "✅" if status == "COMPLETED" else "⏳" if status == "PENDING" else "❌"
+            username = f"<@{uid}>"
+            
+            lines.append(
+                f"`{time_str}` {icon} **{svc}** | `{oid}` | {price}€ | {username}"
+            )
+
+        # Gestion de la longueur du message
+        full_text = "\n".join(lines)
+        if len(full_text) > 4000:
+            import io
+            file_data = io.BytesIO(full_text.encode("utf-8"))
+            await interaction.followup.send(
+                content="📄 Rapport trop long, voir fichier :",
+                file=discord.File(file_data, filename=f"stats_{self.date_str}.txt"),
+                ephemeral=True,
+            )
+        else:
+            embed = discord.Embed(description=full_text, color=0x3498DB)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(
