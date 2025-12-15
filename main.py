@@ -2091,7 +2091,7 @@ class DashboardView(discord.ui.View):
         # Détection du pays
         try:
             parsed_phone = phonenumbers.parse("+" + next_account["phone"].strip("+"))
-            country_name = geocoder.description_for_number(parsed_phone, "fr")
+            country_name = geocoder.country_name_for_number(parsed_phone, "fr")
             if not country_name:
                 country_name = "Inconnu"
         except:
