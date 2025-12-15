@@ -130,7 +130,9 @@ def init_db():
 
 
 # --- GESTION STOCK TELEGRAM ---
-def add_telegram_account_db(phone, session_string, password_2fa, price_cost, origin="MANUAL"):
+def add_telegram_account_db(
+    phone, session_string, password_2fa, price_cost, origin="MANUAL"
+):
     conn = sqlite3.connect("database.db")
     conn.execute(
         "INSERT INTO telegram_accounts (phone, session_string, password_2fa, price_cost, origin, added_at, status) VALUES (?, ?, ?, ?, ?, ?, 'AVAILABLE')",
@@ -148,14 +150,14 @@ def get_available_telegram_account():
         "SELECT id, phone, session_string, password_2fa, price_cost FROM telegram_accounts WHERE status='AVAILABLE' LIMIT 1"
     ).fetchone()
     conn.close()
-    
+
     if row:
         return {
             "id": row[0],
             "phone": row[1],
             "session_string": row[2],
             "password_2fa": row[3],
-            "cost": row[4]
+            "cost": row[4],
         }
     return None
 
@@ -172,7 +174,9 @@ def mark_telegram_account_sold(account_id, user_id):
 
 def count_telegram_stock():
     conn = sqlite3.connect("database.db")
-    count = conn.execute("SELECT COUNT(*) FROM telegram_accounts WHERE status='AVAILABLE'").fetchone()[0]
+    count = conn.execute(
+        "SELECT COUNT(*) FROM telegram_accounts WHERE status='AVAILABLE'"
+    ).fetchone()[0]
     conn.close()
     return count
 
@@ -400,7 +404,6 @@ class HoodpayClient:
                     return None
 
 
-
 # --- HANDLER TELETHON ---
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -409,6 +412,7 @@ import re
 # --- CONFIG TELETHON ---
 TG_API_ID = os.getenv("TELEGRAM_API_ID")
 TG_API_HASH = os.getenv("TELEGRAM_API_HASH")
+
 
 # --- HANDLER TELETHON (Gestionnaire de Sessions) ---
 class TelethonHandler:
@@ -419,61 +423,94 @@ class TelethonHandler:
         et se déconnecte.
         """
         if not TG_API_ID or not TG_API_HASH:
-            return {"success": False, "error": "Config Bot Telegram manquante (API_ID/HASH)."}
+            return {
+                "success": False,
+                "error": "Config Bot Telegram manquante (API_ID/HASH).",
+            }
 
-        client = TelegramClient(StringSession(session_string), int(TG_API_ID), TG_API_HASH)
-        
+        client = TelegramClient(
+            StringSession(session_string), int(TG_API_ID), TG_API_HASH
+        )
+
         try:
-            print(f"📡 Connexion Telethon en cours...")
+            print(f"📡 [Telethon] Tentative de connexion pour la session du compte...")
             await client.connect()
-            
+
             if await client.is_user_authorized():
+                print(f"✅ [Telethon] Connexion CLIENT réussie. Session active.")
+
                 # On cherche le message de Telegram (777000)
                 # On prend l'historique récent
-                print(f"🔍 Recherche du code dans les messages de 777000...")
-                # Note: 777000 est l'utilisateur Système de Telegram
-                # Parfois il faut get_entity(777000) avant
-                system_user = await client.get_entity(777000)
-                
+                print(f"🔍 [Telethon] Recherche du code dans les messages de 777000...")
+
+                try:
+                    system_user = await client.get_entity(777000)
+                except Exception as e:
+                    print(
+                        f"⚠️ [Telethon] Impossible de résoudre l'entité 777000 directement : {e}"
+                    )
+                    # Fallback éventuel ou abandon
+
                 # On lit les 5 derniers messages
-                messages = await client.get_messages(system_user, limit=5)
-                
+                messages = await client.get_messages(777000, limit=5)
+
                 code = None
+                print(f"📨 [Telethon] {len(messages)} messages trouvés de Telegram.")
+
                 for msg in messages:
                     if msg.message:
+                        print(
+                            f"   -> Message reçu ({msg.date}): {msg.message[:50]}..."
+                        )  # Log tronqué pour debug
+
                         # Regex pour trouver un code à 5 chiffres
                         # Ex: "Login code: 12345" ou "code de connexion: 12345"
                         # On cherche 5 chiffres isolés ou précédés de "code"
-                        match = re.search(r':\s*(\d{5})', msg.message)
+                        match = re.search(r":\s*(\d{5})", msg.message)
                         if not match:
-                             match = re.search(r'\b(\d{5})\b', msg.message)
-                        
+                            match = re.search(r"\b(\d{5})\b", msg.message)
+
                         if match:
                             # On vérifie si le message est récent (moins de 2 min)
                             # msg.date est en UTC timezoné
                             now = datetime.now(msg.date.tzinfo)
                             diff = now - msg.date
-                            if diff.total_seconds() < 300: # 5 minutes max
+                            print(
+                                f"      Code potentiel trouvé: {match.group(1)} (il y a {int(diff.total_seconds())}s)"
+                            )
+
+                            if diff.total_seconds() < 300:  # 5 minutes max
                                 code = match.group(1)
-                                print(f"✅ Code trouvé : {code} (Message d'il y a {int(diff.total_seconds())}s)")
+                                print(f"✅ [Telethon] CODE VALIDE EXTRAT : {code}")
                                 break
-                
+                            else:
+                                print(f"      ❌ Code expiré (>300s).")
+
                 await client.disconnect()
-                
+
                 if code:
                     return {"success": True, "code": code}
                 else:
-                    return {"success": False, "error": "Aucun code récent trouvé (attendez un peu et réessayez)."}
+                    return {
+                        "success": False,
+                        "error": "Aucun code récent trouvé. Connectez-vous sur l'app Telegram pour recevoir le code, puis réessayez ici.",
+                    }
             else:
+                print(
+                    f"❌ [Telethon] Connexion ECHOUÉE : Session non autorisée (invalide ou déconnectée)."
+                )
                 await client.disconnect()
-                return {"success": False, "error": "Session invalide ou expirée."}
+                return {
+                    "success": False,
+                    "error": "Session du bot invalide. Contactez le support.",
+                }
 
         except Exception as e:
             try:
                 await client.disconnect()
             except:
                 pass
-            print(f"Erreur Telethon: {e}")
+            print(f"❌Erreur Telethon CRITIQUE: {e}")
             return {"success": False, "error": f"Erreur connexion : {str(e)}"}
 
 
@@ -746,7 +783,7 @@ async def stats(interaction: discord.Interaction):
 
     for price, cost, service in rows:
         total_sales += price
-        
+
         if cost:
             # Si c'est un compte Telegram stocké, le coût est déjà net en Euro
             if service == "Telegram Account":
@@ -1758,7 +1795,7 @@ class DashboardView(discord.ui.View):
         style=discord.ButtonStyle.danger,
         emoji="✈️",
         custom_id="dash_buy_account",
-        row=1
+        row=1,
     )
     async def buy_account_btn(
         self, interaction: discord.Interaction, button: discord.ui.Button
@@ -1766,31 +1803,34 @@ class DashboardView(discord.ui.View):
         # 1. Vérif Stock
         stock_count = count_telegram_stock()
         if stock_count == 0:
-             return await interaction.response.send_message(
+            return await interaction.response.send_message(
                 "❌ **Rupture de Stock !**\nRevenez plus tard ou ouvrez un ticket pour pré-commander.",
                 ephemeral=True,
             )
-        
+
         # 2. Prix (Fixe pour l'instant ou récupéré du prochain item)
         # On définit un prix de vente standard ou basé sur le coût du premier item
         next_account = get_available_telegram_account()
         if not next_account:
-            return await interaction.response.send_message("❌ Erreur Stock (Ghost).", ephemeral=True)
-            
-        cost = next_account['cost']
+            return await interaction.response.send_message(
+                "❌ Erreur Stock (Ghost).", ephemeral=True
+            )
+
+        cost = next_account["cost"]
         # Prix de vente : 2.00€ minimum OU le double du coût d'achat si supérieur
         selling_price = max(2.00, round(cost * 2, 2))
-        
+
         # 3. Confirmation
         embed = discord.Embed(
             title="✈️ Acheter un Compte Telegram",
             description=f"**Produit :** Compte Telegram (Session + TData)\n**Stock dispo :** {stock_count}\n**Prix :** {selling_price}€\n\n✅ **Haut de gamme** (Vieux comptes)\n✅ **Connexion Facile** (Code via le Bot)",
-            color=0x0088cc
+            color=0x0088CC,
         )
-        
-        view = ConfirmAccountBuyView(interaction.user.id, selling_price, next_account['id'])
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
+        view = ConfirmAccountBuyView(
+            interaction.user.id, selling_price, next_account["id"]
+        )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 class ConfirmAccountBuyView(discord.ui.View):
@@ -1801,60 +1841,93 @@ class ConfirmAccountBuyView(discord.ui.View):
         self.account_id = account_id
 
     @discord.ui.button(label="✅ Confirmer l'achat", style=discord.ButtonStyle.success)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id: return
-        
+    async def confirm(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        if interaction.user.id != self.user_id:
+            return
+
         await interaction.response.defer()
-        
+
         # Double check stock (Race condition)
         target_account = get_available_telegram_account()
-        if not target_account or target_account['id'] != self.account_id:
-             # Si l'ID a changé mais qu'il y en a un autre, on prend l'autre
-             if target_account:
-                 self.account_id = target_account['id']
-             else:
-                 return await interaction.followup.send("❌ Trop tard ! Le dernier compte vient de partir.", ephemeral=True)
-             
+        if not target_account or target_account["id"] != self.account_id:
+            # Si l'ID a changé mais qu'il y en a un autre, on prend l'autre
+            if target_account:
+                self.account_id = target_account["id"]
+            else:
+                return await interaction.followup.send(
+                    "❌ Trop tard ! Le dernier compte vient de partir.", ephemeral=True
+                )
+
         # Check Solde
         user_balance = get_balance(self.user_id)
         if user_balance < self.price:
-            return await interaction.followup.send(f"❌ Solde insuffisant ({user_balance:.2f}€).", ephemeral=True)
-            
+            return await interaction.followup.send(
+                f"❌ Solde insuffisant ({user_balance:.2f}€).", ephemeral=True
+            )
+
         # Achat !
         update_balance(self.user_id, -self.price)
         mark_telegram_account_sold(self.account_id, self.user_id)
-        
+
         # Historique
         conn = sqlite3.connect("database.db")
         conn.execute(
             "INSERT INTO orders (order_id, discord_id, phone, price, status, created_at, service, cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (f"ACC-{self.account_id}", self.user_id, target_account['phone'], self.price, "COMPLETED", str(datetime.now()), "Telegram Account", target_account['cost'])
+            (
+                f"ACC-{self.account_id}",
+                self.user_id,
+                target_account["phone"],
+                self.price,
+                "COMPLETED",
+                str(datetime.now()),
+                "Telegram Account",
+                target_account["cost"],
+            ),
         )
         conn.commit()
         conn.close()
-        
+
         # DM
         try:
             dm_channel = await interaction.user.create_dm()
-            
+
             embed_dm = discord.Embed(
                 title="✈️ Votre Compte Telegram",
                 description=f"**Numéro :** `{target_account['phone']}`",
-                color=0x0088cc
+                color=0x0088CC,
             )
-            embed_dm.add_field(name="1. Connexion", value="Entrez le numéro sur votre application Telegram.", inline=False)
-            embed_dm.add_field(name="2. Code", value="Cliquez sur le bouton ci-dessous pour recevoir le code envoyé par Telegram.", inline=False)
-            
-            if target_account['password_2fa']:
-                embed_dm.add_field(name="🔐 2FA (Mot de passe)", value=f"`{target_account['password_2fa']}`", inline=False)
-                
-            view_dm = TelegramAccountView(target_account['session_string'])
+            embed_dm.add_field(
+                name="1. Connexion",
+                value="Entrez le numéro sur votre application Telegram.",
+                inline=False,
+            )
+            embed_dm.add_field(
+                name="2. Code",
+                value="Cliquez sur le bouton ci-dessous pour recevoir le code envoyé par Telegram.",
+                inline=False,
+            )
+
+            if target_account["password_2fa"]:
+                embed_dm.add_field(
+                    name="🔐 2FA (Mot de passe)",
+                    value=f"`{target_account['password_2fa']}`",
+                    inline=False,
+                )
+
+            view_dm = TelegramAccountView(target_account["session_string"])
             await dm_channel.send(embed=embed_dm, view=view_dm)
-            
-            await interaction.followup.send("✅ Compte acheté ! Vérifiez vos MP.", ephemeral=True)
+
+            await interaction.followup.send(
+                "✅ Compte acheté ! Vérifiez vos MP.", ephemeral=True
+            )
             self.stop()
         except discord.Forbidden:
-             await interaction.followup.send("❌ Impossible d'envoyer le MP ! (Remboursement auto à faire par admin)", ephemeral=True)
+            await interaction.followup.send(
+                "❌ Impossible d'envoyer le MP ! (Remboursement auto à faire par admin)",
+                ephemeral=True,
+            )
 
 
 class TelegramAccountView(discord.ui.View):
@@ -1862,75 +1935,107 @@ class TelegramAccountView(discord.ui.View):
         super().__init__(timeout=None)
         self.session_string = session_string
 
-    @discord.ui.button(label="📩 Recevoir le Code", style=discord.ButtonStyle.primary, emoji="📬")
-    async def get_code_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(
+        label="📩 Recevoir le Code", style=discord.ButtonStyle.primary, emoji="📬"
+    )
+    async def get_code_btn(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
         await interaction.response.defer()
-        await interaction.followup.send("⏳ Connexion au compte et recherche du code... (Patientez 5-10s)", ephemeral=True)
-        
+        await interaction.followup.send(
+            "⏳ Connexion au compte et recherche du code... (Patientez 5-10s)",
+            ephemeral=True,
+        )
+
         result = await TelethonHandler.get_login_code(self.session_string)
-        
-        if result['success']:
-            await interaction.followup.send(f"✅ **CODE REÇU :** `{result['code']}`", ephemeral=True)
+
+        if result["success"]:
+            await interaction.followup.send(
+                f"✅ **CODE REÇU :** `{result['code']}`", ephemeral=True
+            )
         else:
-             await interaction.followup.send(f"⚠️ {result['error']}", ephemeral=True)
+            await interaction.followup.send(f"⚠️ {result['error']}", ephemeral=True)
 
 
-@bot.tree.command(name="addstock", description="Ajouter un compte Telegram au stock (Admin)")
-async def addstock(interaction: discord.Interaction, phone: str, session: str, cost: float, password: str = None):
-    if not is_user_admin(interaction.user.id): return await interaction.response.send_message("❌", ephemeral=True)
-    
+@bot.tree.command(
+    name="addstock", description="Ajouter un compte Telegram au stock (Admin)"
+)
+async def addstock(
+    interaction: discord.Interaction,
+    phone: str,
+    session: str,
+    cost: float,
+    password: str = None,
+):
+    if not is_user_admin(interaction.user.id):
+        return await interaction.response.send_message("❌", ephemeral=True)
+
     add_telegram_account_db(phone, session, password, cost)
-    await interaction.response.send_message(f"✅ Compte {phone} ajouté au stock (Coût: {cost}€)", ephemeral=True)
+    await interaction.response.send_message(
+        f"✅ Compte {phone} ajouté au stock (Coût: {cost}€)", ephemeral=True
+    )
 
 
-@bot.tree.command(name="stock", description="Voir l'état du stock de comptes Telegram (Admin)")
+@bot.tree.command(
+    name="stock", description="Voir l'état du stock de comptes Telegram (Admin)"
+)
 async def stock(interaction: discord.Interaction):
-    if not is_user_admin(interaction.user.id): return await interaction.response.send_message("❌", ephemeral=True)
-    
+    if not is_user_admin(interaction.user.id):
+        return await interaction.response.send_message("❌", ephemeral=True)
+
     conn = sqlite3.connect("database.db")
     total = conn.execute("SELECT COUNT(*) FROM telegram_accounts").fetchone()[0]
-    available = conn.execute("SELECT COUNT(*) FROM telegram_accounts WHERE status='AVAILABLE'").fetchone()[0]
-    sold = conn.execute("SELECT COUNT(*) FROM telegram_accounts WHERE status='SOLD'").fetchone()[0]
+    available = conn.execute(
+        "SELECT COUNT(*) FROM telegram_accounts WHERE status='AVAILABLE'"
+    ).fetchone()[0]
+    sold = conn.execute(
+        "SELECT COUNT(*) FROM telegram_accounts WHERE status='SOLD'"
+    ).fetchone()[0]
     conn.close()
-    
+
     embed = discord.Embed(title="📦 Inventaire Telegram", color=0xF1C40F)
     embed.add_field(name="Total", value=str(total), inline=True)
     embed.add_field(name="🟢 Disponibles", value=str(available), inline=True)
     embed.add_field(name="🔴 Vendus", value=str(sold), inline=True)
-    
+
     # Estimation valeur stock
-    estimated_value = available * 1.5 # Prix arbitraire ou moyen
+    estimated_value = available * 1.5  # Prix arbitraire ou moyen
     embed.set_footer(text=f"Valeur estimée du stock dispo : ~{estimated_value}€")
-    
+
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="myaccounts", description="Voir mes comptes Telegram achetés (et recevoir le code)")
+@bot.tree.command(
+    name="myaccounts",
+    description="Voir mes comptes Telegram achetés (et recevoir le code)",
+)
 async def myaccounts(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    
+
     conn = sqlite3.connect("database.db")
     # On récupère les 5 derniers comptes achetés par l'utilisateur
     rows = conn.execute(
         "SELECT id, phone, session_string, password_2fa, sold_at FROM telegram_accounts WHERE sold_to=? ORDER BY sold_at DESC LIMIT 5",
-        (interaction.user.id,)
+        (interaction.user.id,),
     ).fetchall()
     conn.close()
-    
+
     if not rows:
-        return await interaction.followup.send("❌ Vous n'avez acheté aucun compte Telegram.", ephemeral=True)
+        return await interaction.followup.send(
+            "❌ Vous n'avez acheté aucun compte Telegram.", ephemeral=True
+        )
 
     for row in rows:
         acc_id, phone, session, pwd, date = row
-        
-        embed = discord.Embed(title=f"📱 Compte {phone}", color=0x0088cc)
+
+        embed = discord.Embed(title=f"📱 Compte {phone}", color=0x0088CC)
         embed.add_field(name="Date Achat", value=str(date), inline=True)
         if pwd:
             embed.add_field(name="🔐 2FA", value=f"`{pwd}`", inline=True)
-            
+
         view = TelegramAccountView(session)
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-    
+
     # Message de fin
     await interaction.followup.send("✅ Voici vos comptes récents.", ephemeral=True)
 
@@ -1939,40 +2044,58 @@ class ClearStockView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=60)
 
-    @discord.ui.button(label="🗑️ Supprimer le Stock (Invendus)", style=discord.ButtonStyle.danger)
-    async def clear_available(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(
+        label="🗑️ Supprimer le Stock (Invendus)", style=discord.ButtonStyle.danger
+    )
+    async def clear_available(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
         await interaction.response.defer()
         conn = sqlite3.connect("database.db")
-        count = conn.execute("DELETE FROM telegram_accounts WHERE status='AVAILABLE'").rowcount
+        count = conn.execute(
+            "DELETE FROM telegram_accounts WHERE status='AVAILABLE'"
+        ).rowcount
         conn.commit()
         conn.close()
-        await interaction.edit_original_response(content=f"✅ **{count} comptes disponibles** ont été supprimés du stock.", view=None)
+        await interaction.edit_original_response(
+            content=f"✅ **{count} comptes disponibles** ont été supprimés du stock.",
+            view=None,
+        )
 
-    @discord.ui.button(label="🔥 TOUT Supprimer (Reset Total)", style=discord.ButtonStyle.danger)
-    async def clear_all(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(
+        label="🔥 TOUT Supprimer (Reset Total)", style=discord.ButtonStyle.danger
+    )
+    async def clear_all(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
         await interaction.response.defer()
         conn = sqlite3.connect("database.db")
         count = conn.execute("DELETE FROM telegram_accounts").rowcount
         conn.commit()
         conn.close()
-        await interaction.edit_original_response(content=f"⚠️ **Reset Complet** : La table Telegram a été vidée ({count} comptes supprimés).", view=None)
+        await interaction.edit_original_response(
+            content=f"⚠️ **Reset Complet** : La table Telegram a été vidée ({count} comptes supprimés).",
+            view=None,
+        )
 
     @discord.ui.button(label="❌ Annuler", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content="Opération annulée.", view=None)
 
 
-@bot.tree.command(name="clearstock", description="Supprimer des comptes Telegram de la DB (Admin)")
+@bot.tree.command(
+    name="clearstock", description="Supprimer des comptes Telegram de la DB (Admin)"
+)
 async def clearstock(interaction: discord.Interaction):
-    if not is_user_admin(interaction.user.id): return await interaction.response.send_message("❌", ephemeral=True)
-    
+    if not is_user_admin(interaction.user.id):
+        return await interaction.response.send_message("❌", ephemeral=True)
+
     view = ClearStockView()
     await interaction.response.send_message(
-        "⚠️ **Zone de Danger**\nQue voulez-vous supprimer ?\n\n*Note : Supprimer 'Tout' effacera aussi l'historique des comptes vendus (les clients perdront l'accès au code).*", 
-        view=view, 
-        ephemeral=True
+        "⚠️ **Zone de Danger**\nQue voulez-vous supprimer ?\n\n*Note : Supprimer 'Tout' effacera aussi l'historique des comptes vendus (les clients perdront l'accès au code).*",
+        view=view,
+        ephemeral=True,
     )
-
 
 
 class CountrySelectView(discord.ui.View):
