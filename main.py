@@ -2089,7 +2089,7 @@ class DashboardView(discord.ui.View):
         # 3. Confirmation
         embed = discord.Embed(
             title="✈️ Acheter un Compte Telegram",
-            description=f"**Produit :** Compte Telegram (Session + TData)\n**Stock dispo :** {stock_count}\n**Prix :** {selling_price}€\n\n✅ **Haut de gamme** (Vieux comptes)\n✅ **Connexion Facile** (Code via le Bot)",
+            description=f"**Produit :** Compte Telegram (Session)\n**Stock dispo :** {stock_count}\n**Prix :** {selling_price}€\n\n✅ **Connexion Facile** (Code via le Bot)",
             color=0x0088CC,
         )
 
@@ -2105,6 +2105,14 @@ class ConfirmAccountBuyView(discord.ui.View):
         self.user_id = user_id
         self.price = price
         self.account_id = account_id
+
+    @discord.ui.button(label="❌ Annuler", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            return
+        await interaction.response.edit_message(
+            content="❌ Achat annulé.", embed=None, view=None
+        )
 
     @discord.ui.button(label="✅ Confirmer l'achat", style=discord.ButtonStyle.success)
     async def confirm(
