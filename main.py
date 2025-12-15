@@ -986,6 +986,193 @@ async def removeadmin(interaction: discord.Interaction, user: discord.User):
     )
 
 
+# --- SYSTEME DE REPARATION DE SESSION (MIGRATION IP) ---
+
+
+class FixSessionView(discord.ui.View):
+    def __init__(self, client, phone, account_id):
+        super().__init__(timeout=300)
+        self.client = client
+        self.phone = phone
+        self.account_id = account_id
+        self.code = None
+        self.password = None
+
+    @discord.ui.button(label="Entrer Code", style=discord.ButtonStyle.green)
+    async def enter_code(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        await interaction.response.send_modal(CodeModal(self))
+
+    @discord.ui.button(label="Entrer 2FA (Mdp)", style=discord.ButtonStyle.blurple)
+    async def enter_password(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        await interaction.response.send_modal(PasswordModal(self))
+
+    @discord.ui.button(label="Supprimer du Stock", style=discord.ButtonStyle.red)
+    async def delete_account(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        conn = sqlite3.connect("database.db")
+        conn.execute("DELETE FROM telegram_accounts WHERE id=?", (self.account_id,))
+        conn.commit()
+        conn.close()
+        await interaction.response.send_message(
+            f"🗑️ Compte {self.phone} supprimé de la base.", ephemeral=True
+        )
+        self.stop()
+
+
+class CodeModal(discord.ui.Modal, title="Code de Connexion"):
+    code_input = discord.ui.TextInput(
+        label="Code reçu (Mail/SMS/App)", placeholder="12345"
+    )
+
+    def __init__(self, view):
+        super().__init__()
+        self.view_ref = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        code = self.code_input.value
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            # On tente le sign-in avec le code
+            await self.view_ref.client.sign_in(self.view_ref.phone, code)
+
+            # Si ça passe, on sauvegarde
+            new_session = StringSession.save(self.view_ref.client.session)
+
+            conn = sqlite3.connect("database.db")
+            conn.execute(
+                "UPDATE telegram_accounts SET session_string=? WHERE id=?",
+                (new_session, self.view_ref.account_id),
+            )
+            conn.commit()
+            conn.close()
+
+            await interaction.followup.send(
+                f"✅ Session réparée et sauvegardée pour {self.view_ref.phone} !"
+            )
+            self.view_ref.stop()
+
+        except Exception as e:
+            if "password" in str(e).lower():
+                await interaction.followup.send(
+                    f"⚠️ Besoin du mot de passe 2FA (Cliquez sur le bouton bleu). Erreur: {e}"
+                )
+            else:
+                await interaction.followup.send(f"❌ Erreur code: {e}")
+
+
+class PasswordModal(discord.ui.Modal, title="Mot de Passe 2FA"):
+    password_input = discord.ui.TextInput(label="Mot de passe", placeholder="S3cr3t")
+
+    def __init__(self, view):
+        super().__init__()
+        self.view_ref = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        pwd = self.password_input.value
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            # On tente le sign-in avec le mot de passe
+            await self.view_ref.client.sign_in(password=pwd)
+
+            # Si ça passe
+            new_session = StringSession.save(self.view_ref.client.session)
+
+            conn = sqlite3.connect("database.db")
+            conn.execute(
+                "UPDATE telegram_accounts SET session_string=? WHERE id=?",
+                (new_session, self.view_ref.account_id),
+            )
+            conn.commit()
+            conn.close()
+
+            await interaction.followup.send(
+                f"✅ Session réparée (2FA) et sauvegardée pour {self.view_ref.phone} !"
+            )
+            self.view_ref.stop()
+
+        except Exception as e:
+            await interaction.followup.send(f"❌ Erreur mot de passe: {e}")
+
+
+@bot.tree.command(
+    name="fix_stock", description="Réparer les sessions invalides sur le VPS"
+)
+async def fix_stock(interaction: discord.Interaction):
+    if not is_user_admin(interaction.user.id):
+        return await interaction.response.send_message(
+            "❌ Accès refusé.", ephemeral=True
+        )
+
+    await interaction.response.defer(ephemeral=True)
+
+    conn = sqlite3.connect("database.db")
+    accounts = conn.execute(
+        "SELECT id, phone, session_string FROM telegram_accounts WHERE status='AVAILABLE'"
+    ).fetchall()
+    conn.close()
+
+    await interaction.followup.send(
+        f"🔄 Analyse de {len(accounts)} comptes en cours... Cela peut prendre du temps."
+    )
+
+    issues_found = 0
+
+    for acc_id, phone, session_str in accounts:
+        if not TG_API_ID or not TG_API_HASH:
+            await interaction.followup.send("❌ Config TELEGRAM_API_ID manquante.")
+            return
+
+        client = TelegramClient(StringSession(session_str), int(TG_API_ID), TG_API_HASH)
+
+        try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                # Session invalide -> Besoin de réparation
+                issues_found += 1
+
+                # On déclenche l'envoi du code
+                try:
+                    await client.send_code_request(phone)
+                    msg = f"⚠️ **Compte {phone}** : Session invalide. Code envoyé (SMS/Mail)."
+                    view = FixSessionView(client, phone, acc_id)
+                    await interaction.followup.send(msg, view=view, ephemeral=True)
+
+                    # On attend que l'admin interagisse avant de passer au suivant (pour éviter de tout spammer)
+                    # Hack : on attend que la vue soit stoppée
+                    await view.wait()
+
+                except Exception as e:
+                    await interaction.followup.send(
+                        f"❌ Erreur critique sur {phone} (impossible d'envoyer le code) : {e}",
+                        ephemeral=True,
+                    )
+                    await client.disconnect()
+            else:
+                # Session valide, on déconnecte juste
+                await client.disconnect()
+
+        except Exception as e:
+            print(f"Erreur check {phone}: {e}")
+            try:
+                await client.disconnect()
+            except:
+                pass
+
+    if issues_found == 0:
+        await interaction.followup.send(
+            "✅ Tous les comptes du stock semblent actifs et valides !", ephemeral=True
+        )
+    else:
+        await interaction.followup.send("🏁 Vérification terminée.", ephemeral=True)
+
+
 @bot.tree.command(name="balance", description="Voir mon solde")
 async def balance(interaction: discord.Interaction):
     await interaction.response.send_message(
@@ -1920,7 +2107,8 @@ class ConfirmAccountBuyView(discord.ui.View):
             await dm_channel.send(embed=embed_dm, view=view_dm)
 
             await interaction.followup.send(
-                "✅ Compte acheté ! Vérifiez vos MP.", ephemeral=True
+                "✅ Compte acheté ! Vérifiez vos MP.\n💡 *Retrouvez vos comptes via la commande* `/myaccounts`",
+                ephemeral=True,
             )
             self.stop()
         except discord.Forbidden:
