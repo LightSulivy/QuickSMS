@@ -2304,20 +2304,32 @@ async def stock(interaction: discord.Interaction):
     name="myaccounts",
     description="Voir mes comptes Telegram achetés (et recevoir le code)",
 )
-async def myaccounts(interaction: discord.Interaction):
+async def myaccounts(interaction: discord.Interaction, user: discord.Member = None):
+    target_user_id = interaction.user.id
+    target_name = "Vous"
+
+    # Si un admin veut voir les comptes de quelqu'un d'autre
+    if user:
+        if not is_user_admin(interaction.user.id):
+            return await interaction.response.send_message(
+                "❌ Vous ne pouvez pas voir les comptes des autres.", ephemeral=True
+            )
+        target_user_id = user.id
+        target_name = user.display_name
+
     await interaction.response.defer(ephemeral=True)
 
     conn = sqlite3.connect("database.db")
-    # On récupère les 5 derniers comptes achetés par l'utilisateur
+    # On récupère les 5 derniers comptes achetés par l'utilisateur cible
     rows = conn.execute(
         "SELECT id, phone, session_string, password_2fa, sold_at FROM telegram_accounts WHERE sold_to=? ORDER BY sold_at DESC LIMIT 5",
-        (interaction.user.id,),
+        (target_user_id,),
     ).fetchall()
     conn.close()
 
     if not rows:
         return await interaction.followup.send(
-            "❌ Vous n'avez acheté aucun compte Telegram.", ephemeral=True
+            f"❌ {target_name} n'avez acheté aucun compte Telegram.", ephemeral=True
         )
 
     for row in rows:
@@ -2332,7 +2344,7 @@ async def myaccounts(interaction: discord.Interaction):
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     # Message de fin
-    await interaction.followup.send("✅ Voici vos comptes récents.", ephemeral=True)
+    await interaction.followup.send(f"✅ Voici les comptes récents de {target_name}.", ephemeral=True)
 
 
 class ClearStockView(discord.ui.View):
