@@ -1,85 +1,93 @@
-# 🚀 QuickSMS v2.5
+# 🚀 QuickSMS v3.0
 
-Bot Discord professionnel automatisé pour la vente et la réception de SMS de validation (OTP).
-Système complet "Set & Forget" avec gestion de solde, dashboard interactif, paiements automatisés et panel d'administration avancé.
+Bot Discord professionnel "All-in-One" pour la vente automatisée de **Numéros SMS (OTP)** et de **Comptes Telegram**.
+Système complet "Set & Forget" avec gestion de solde, dashboard interactif, paiements Hoodpay/Cryptomus et panel d'administration avancé.
 
 ---
 
-## 🛠️ Commandes Serveur (Maintenance)
+## 🔥 Nouveautés v3.0 (Telegram Accounts)
 
-Commandes essentielles pour gérer le processus du bot sur votre VPS/Serveur (si vous utilisez PM2) :
+- **Vente de Comptes Telegram** : Le bot peut désormais vendre des sessions Telegram pré-enregistrées.
+- **Connexion "Magique"** : Plus besoin de manipuler des fichiers `.session` pour le client. Le bot intercepte le code de connexion Telegram et l'envoie au client.
+- **Import Automatique** : Script pour charger des centaines de comptes depuis un dossier `sessions/` (Format TData/Json).
+
+---
+
+## 🛠️ Maintenance Serveur
+
+Commandes pour gérer le bot sur votre VPS (PM2) :
 
 ```bash
-# Voir les logs (transactions, erreurs) en temps réel
+# Voir les logs
 pm2 logs QuickSMS
 
-# Redémarrer le bot (après une mise à jour ou un bug)
+# Redémarrer (Mise à jour)
 pm2 restart QuickSMS
-
-# Arrêter le bot
-pm2 stop QuickSMS
 ```
 
 ---
 
-## 🤖 Commandes Discord
+## 🤖 Commandes Administrateur
 
-Le bot fonctionne principalement via des **Slash Commands** (`/`) et un **Dashboard Interactif** persistant.
+_Réservé aux admins définis._
 
-### 👑 Commandes Administrateur
+### 📦 Gestion des Comptes Telegram (Stock)
 
-_Ces commandes sont réservées aux administrateurs (définis dans la base de données)._
+| Commande          | Description                                                            |
+| :---------------- | :--------------------------------------------------------------------- |
+| **`/addstock`**   | Ajouter un compte manuellement (Phone + Session String).               |
+| **`/stock`**      | Voir l'état de l'inventaire (Total, Disponibles, Vendus).              |
+| **`/clearstock`** | Supprimer des comptes de la base de données (Invendus ou Reset total). |
 
-| Commande                       | Description                                                                                  | Exemple                    |
-| :----------------------------- | :------------------------------------------------------------------------------------------- | :------------------------- |
-| **`/deposit <user> <amount>`** | Ajoute manuellement du crédit à un utilisateur.                                              | `/deposit @Client 10`      |
-| **`/setmargin <margin>`**      | Définit le multiplicateur de marge global.                                                   | `/setmargin 1.5` (50%)     |
-| **`/stats`**                   | Affiche un rapport complet des ventes et bénéfices du jour.                                  | `/stats`                   |
-| **`/history <user> [filter]`** | Voir l'historique détaillé d'un membre. Filtres dispos : **Tout**, **Validées**, **Dépôts**. | `/history @Client`         |
-| **`/addadmin <user>`**         | Ajoute un nouvel administrateur au bot.                                                      | `/addadmin @Modo`          |
-| **`/removeadmin <user>`**      | Retire les droits d'administrateur à un membre.                                              | `/removeadmin @AncienModo` |
-| **`/listadmins`**              | Affiche la liste de tous les administrateurs actuels.                                        | `/listadmins`              |
+### 💰 Gestion Finance & Users
 
-### 👤 Commandes Utilisateur
+| Commande                       | Description                                              |
+| :----------------------------- | :------------------------------------------------------- |
+| **`/stats`**                   | Rapport des ventes et bénéfices du jour (SMS + Comptes). |
+| **`/deposit <user> <amount>`** | Ajouter du crédit manuellement.                          |
+| **`/setmargin <margin>`**      | Changer la marge globale (SMS uniquement).               |
+| **`/history <user>`**          | Voir l'historique des achats et dépôts.                  |
+| **`/listadmins`**              | Gérer les admins.                                        |
 
-_Accessibles à tous les membres. Le Dashboard est généralement suffisant._
+### 🔧 Outils
 
-<<<<<<< HEAD
-| Commande | Description |
-| :----------------------- | :----------------------------------------------------------------------------- |
-| **`/balance`** | Affiche le solde actuel de votre compte. |
-| **`/recharge <amount>`** | Génère un lien de paiement (Carte/Crypto) via Hoodpay pour créditer le compte. |
-| **`/services [pays]`** | Affiche la liste des services disponibles et leurs prix en temps réel. |
-
-## 📱 Dashboard Client
-
-Le bot déploie automatiquement un **Dashboard Interactif** dans les salons configurés :
-
-1.  **🛒 Acheter un numéro** :
-
-    - Sélection intuitive du Pays (ex: 🇫🇷 France, 🇨🇦 Canada).
-    - Choix du Service (Whatsapp, Telegram, Uber, etc.).
-    - Le bot envoie le numéro en **Message Privé (DM)**.
-    - L'utilisateur attend le code directement dans ses DMs avec mise à jour en temps réel.
-
-2.  **💰 Mon Solde** : Vérification immédiate des crédits.
-
-3.  **💳 Recharger** : Raccourci vers la commande de paiement.
-
-4.  **📦 Packs Spéciaux** : (Optionnel) Permet l'achat groupé de plusieurs services (ex: Pack "Double WA").
+- **Script d'import de masse** :
+  1.  Placez vos fichiers (`.session` + `.json`) dans le dossier `sessions/`.
+  2.  Lancez : `./venv/bin/python import_sessions.py`
+  3.  Vos comptes sont prêts à être vendus !
 
 ---
 
-## ⚙️ Détails Techniques
+## 👤 Commandes & Features Utilisateur
 
-- **Base de Données** : SQLite (Stockage local rapide et fiable).
-  - `users` : Soldes clients.
-  - `orders` : Historique des commandes.
-  - `deposits` : Historique des rechargements (Admin + Hoodpay).
-  - `admins` : Liste dynamique des admins.
-  - `blocked_numbers` : Blacklist des numéros défectueux.
-- **API** : Intégration SMS-Activate (Achat numéros) & Hoodpay (Paiements).
-- **Prix** : Calcul dynamique basé sur le coût API + Marge.
-  - Formule : `((Prix API * 1.3) * Marge) * 0.9` (Ajustable dans le code).
+### Dashboard Interactif
 
-**Note:** Les administrateurs peuvent être gérés directement via Discord sans toucher au code ou à la base de données.
+Le bot déploie un panel complet :
+
+1.  **🛒 Acheter SMS** : Whatsapp, Uber, Telegram, etc. (Automatique via SMS-Activate).
+2.  **🔥 Compte Telegram** : Achat immédiat d'un compte (vieux/vérifié) depuis votre stock.
+    - _Fonction "Recevoir le Code"_ : Le bot donne le code de connexion en temps réel.
+3.  **💳 Recharger** : Paiement Auto (Carte/Crypto) via Hoodpay.
+4.  **💰 Mon Solde** : Solde en temps réel.
+
+### Commandes Utiles
+
+| Commande          | Description                                                                                   |
+| :---------------- | :-------------------------------------------------------------------------------------------- |
+| **`/myaccounts`** | Si le bot redémarre, permet de retrouver ses comptes achetés et le bouton "Recevoir le code". |
+| **`/balance`**    | Voir son solde.                                                                               |
+
+---
+
+## ⚙️ Détails Techniques v3.0
+
+- **Base de Données** : SQLite (Locale).
+  - `telegram_accounts` : Stockage des sessions (encryptées format StringSession).
+  - `orders` : Historique unifié (SMS et Comptes).
+- **APIs** :
+  - **SMS-Activate** : Pour les numéros temporaires à la demande.
+  - **Telethon** : Pour la connexion "Client" invisible aux comptes Telegram vendus.
+  - **Hoodpay** : Gateway de paiement.
+- **Prix** :
+  - SMS : `Prix API * Marge`.
+  - Comptes Telegram : Fixé à `2.00€` minimum (ou `Coût * 2` si supérieur).
