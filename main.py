@@ -1175,8 +1175,10 @@ async def fix_stock(interaction: discord.Interaction):
 
 @bot.tree.command(name="balance", description="Voir mon solde")
 async def balance(interaction: discord.Interaction):
+    # On récupère le solde de l'utilisateur qui fait la commande
+    user_balance = get_balance(interaction.user.id)
     await interaction.response.send_message(
-        f"{message_prefix} {get_balance(target_user.id):.2f}€", ephemeral=True
+        f"💰 **Votre solde : {user_balance:.2f}€**", ephemeral=True
     )
 
 
