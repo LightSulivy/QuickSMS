@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, time
 from discord.ext import tasks
 import os
 from dotenv import load_dotenv
+import phonenumbers
+from phonenumbers import geocoder
 
 # --- CONFIGURATION ---
 load_dotenv()
@@ -2086,10 +2088,19 @@ class DashboardView(discord.ui.View):
         # Prix de vente : 2.00€ minimum OU le double du coût d'achat si supérieur
         selling_price = max(2.00, round(cost * 2, 2))
 
+        # Détection du pays
+        try:
+            parsed_phone = phonenumbers.parse("+" + next_account["phone"].strip("+"))
+            country_name = geocoder.description_for_number(parsed_phone, "fr")
+            if not country_name:
+                country_name = "Inconnu"
+        except:
+            country_name = "Inconnu"
+
         # 3. Confirmation
         embed = discord.Embed(
             title="✈️ Acheter un Compte Telegram",
-            description=f"**Produit :** Compte Telegram (Session)\n**Stock dispo :** {stock_count}\n**Prix :** {selling_price}€\n\n✅ **Connexion Facile** (Code via le Bot)",
+            description=f"**Produit :** Compte Telegram (Session)\n**Pays :** 🌍 {country_name}\n**Stock dispo :** {stock_count}\n**Prix :** {selling_price}€\n\n⚠️ **ATTENTION** : Connexion obligatoire avec une **IP du pays du numéro** (VPN/Proxy) !\n✅ **Connexion Facile** (Code via le Bot)",
             color=0x0088CC,
         )
 
@@ -2169,7 +2180,7 @@ class ConfirmAccountBuyView(discord.ui.View):
 
             embed_dm = discord.Embed(
                 title="✈️ Votre Compte Telegram",
-                description=f"**Numéro :** `{target_account['phone']}`",
+                description=f"**Numéro :** `{target_account['phone']}`\n\n⚠️ **IMPORTANT :** Connectez-vous impérativement avec un **VPN/Proxy localisé dans le pays du numéro**, sinon le compte risque d'être banni instantanément.",
                 color=0x0088CC,
             )
             embed_dm.add_field(
