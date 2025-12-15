@@ -1173,12 +1173,28 @@ async def fix_stock(interaction: discord.Interaction):
         await interaction.followup.send("🏁 Vérification terminée.", ephemeral=True)
 
 
-@bot.tree.command(name="balance", description="Voir mon solde")
-async def balance(interaction: discord.Interaction):
-    # On récupère le solde de l'utilisateur qui fait la commande
-    user_balance = get_balance(interaction.user.id)
+@bot.tree.command(
+    name="balance", description="Voir mon solde ou celui d'un utilisateur (Admin)"
+)
+async def balance(interaction: discord.Interaction, user: discord.User = None):
+    target_user = user if user else interaction.user
+
+    # Si on demande le solde d'un autre et qu'on n'est PAS admin -> Refusé
+    if target_user.id != interaction.user.id and not is_user_admin(interaction.user.id):
+        return await interaction.response.send_message(
+            "❌ Vous ne pouvez voir que votre propre solde.", ephemeral=True
+        )
+
+    user_balance = get_balance(target_user.id)
+
+    msg_prefix = (
+        "💰 **Votre solde"
+        if target_user.id == interaction.user.id
+        else f"💰 **Solde de {target_user.name}"
+    )
+
     await interaction.response.send_message(
-        f"💰 **Votre solde : {user_balance:.2f}€**", ephemeral=True
+        f"{msg_prefix} : {user_balance:.2f}€**", ephemeral=True
     )
 
 
