@@ -459,43 +459,38 @@ class TelethonHandler:
                 code = None
                 print(f"📨 [Telethon] {len(messages)} messages trouvés de Telegram.")
 
+                found_codes = []
                 for msg in messages:
                     if msg.message:
-                        print(
-                            f"   -> Message reçu ({msg.date}): {msg.message[:50]}..."
-                        )  # Log tronqué pour debug
-
-                        # Regex pour trouver un code à 5 chiffres
-                        # Ex: "Login code: 12345" ou "code de connexion: 12345"
-                        # On cherche 5 chiffres isolés ou précédés de "code"
+                        print(f"   -> Message reçu ({msg.date}): {msg.message[:50]}...")
+                        
                         match = re.search(r":\s*(\d{5})", msg.message)
                         if not match:
                             match = re.search(r"\b(\d{5})\b", msg.message)
 
                         if match:
-                            # On vérifie si le message est récent (moins de 2 min)
-                            # msg.date est en UTC timezoné
                             now = datetime.now(msg.date.tzinfo)
                             diff = now - msg.date
-                            print(
-                                f"      Code potentiel trouvé: {match.group(1)} (il y a {int(diff.total_seconds())}s)"
-                            )
-
-                            if diff.total_seconds() < 300:  # 5 minutes max
+                            # On prend tout ce qui a moins de 24h (86400s) pour être large
+                            if diff.total_seconds() < 86400:
                                 code = match.group(1)
-                                print(f"✅ [Telethon] CODE VALIDE EXTRAT : {code}")
-                                break
-                            else:
-                                print(f"      ❌ Code expiré (>300s).")
+                                found_codes.append({
+                                    "code": code,
+                                    "age": int(diff.total_seconds()),
+                                    "message": msg.message
+                                })
+                                print(f"✅ Code trouvé : {code} ({int(diff.total_seconds())}s)")
 
                 await client.disconnect()
 
-                if code:
-                    return {"success": True, "code": code}
+                if found_codes:
+                    # On trie du plus récent au plus vieux
+                    found_codes.sort(key=lambda x: x["age"])
+                    return {"success": True, "codes": found_codes}
                 else:
                     return {
                         "success": False,
-                        "error": "Aucun code récent trouvé. Connectez-vous sur l'app Telegram pour recevoir le code, puis réessayez ici.",
+                        "error": "Aucun code trouvé dans les dernières 24h.",
                     }
             else:
                 print(
@@ -2236,9 +2231,23 @@ class TelegramAccountView(discord.ui.View):
         result = await TelethonHandler.get_login_code(self.session_string)
 
         if result["success"]:
-            await interaction.followup.send(
-                f"✅ **CODE REÇU :** `{result['code']}`", ephemeral=True
-            )
+            msg_response = "✅ **Voici les codes trouvés (du plus récent au plus vieux) :**\n\n"
+            
+            for i, item in enumerate(result["codes"]):
+                age = item['age']
+                age_str = f"{age}s"
+                if age > 300: # 5 minutes
+                    age_str += " ⚠️ (Expiré ?)"
+                elif i == 0:
+                    age_str += " ✨ (Le + récent)"
+
+                msg_response += f"🔹 **Code:** `{item['code']}` | 🕓 Il y a {age_str}\n"
+            
+            # On ajoute le message complet du tout dernier code pour vérif
+            last_msg = result["codes"][0]["message"]
+            msg_response += f"\n📄 **Dernier Message Telegram :**\n||{last_msg}||"
+
+            await interaction.followup.send(msg_response, ephemeral=True)
         else:
             await interaction.followup.send(f"⚠️ {result['error']}", ephemeral=True)
 
