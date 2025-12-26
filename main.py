@@ -409,6 +409,7 @@ class HoodpayClient:
 # --- HANDLER TELETHON ---
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.tl.functions.account import GetPasswordRequest
 import re
 
 # --- CONFIG TELETHON ---
@@ -463,7 +464,7 @@ class TelethonHandler:
                 for msg in messages:
                     if msg.message:
                         print(f"   -> Message reçu ({msg.date}): {msg.message[:50]}...")
-                        
+
                         match = re.search(r":\s*(\d{5})", msg.message)
                         if not match:
                             match = re.search(r"\b(\d{5})\b", msg.message)
@@ -474,12 +475,16 @@ class TelethonHandler:
                             # On prend tout ce qui a moins de 24h (86400s) pour être large
                             if diff.total_seconds() < 86400:
                                 code = match.group(1)
-                                found_codes.append({
-                                    "code": code,
-                                    "age": int(diff.total_seconds()),
-                                    "message": msg.message
-                                })
-                                print(f"✅ Code trouvé : {code} ({int(diff.total_seconds())}s)")
+                                found_codes.append(
+                                    {
+                                        "code": code,
+                                        "age": int(diff.total_seconds()),
+                                        "message": msg.message,
+                                    }
+                                )
+                                print(
+                                    f"✅ Code trouvé : {code} ({int(diff.total_seconds())}s)"
+                                )
 
                 await client.disconnect()
 
@@ -509,6 +514,47 @@ class TelethonHandler:
                 pass
             print(f"❌Erreur Telethon CRITIQUE: {e}")
             return {"success": False, "error": f"Erreur connexion : {str(e)}"}
+
+    @staticmethod
+    async def check_2fa_status(session_string):
+        """
+        Vérifie si le compte a un mot de passe 2FA actif (Cloud Password).
+        """
+        if not TG_API_ID or not TG_API_HASH:
+            return {"success": False, "error": "Config manquante"}
+
+        client = TelegramClient(
+            StringSession(session_string), int(TG_API_ID), TG_API_HASH
+        )
+        try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                await client.disconnect()
+                return {"success": False, "error": "Session invalide"}
+
+            # Vérification du 2FA
+            password_status = await client(GetPasswordRequest())
+            has_password = password_status.has_password
+
+            # On récupère aussi les infos du compte pour être sûr
+            me = await client.get_me()
+
+            await client.disconnect()
+
+            return {
+                "success": True,
+                "has_2fa": has_password,
+                "username": me.username,
+                "first_name": me.first_name,
+                "phone": me.phone,
+            }
+
+        except Exception as e:
+            try:
+                await client.disconnect()
+            except:
+                pass
+            return {"success": False, "error": str(e)}
 
 
 # --- WEBHOOK SERVER ---
@@ -754,23 +800,45 @@ async def setmargin(interaction: discord.Interaction, margin: float):
 
 
 @bot.tree.command(
-    name="stats", description="Voir les bénéfices du jour (Admin uniquement)"
+    name="stats", description="Voir les bénéfices (Mois spécifique ou en cours)"
 )
-async def stats(interaction: discord.Interaction):
+@app_commands.describe(month="Mois au format MM-YYYY (ex: 12-2024)")
+async def stats(interaction: discord.Interaction, month: str = None):
     if not is_user_admin(interaction.user.id):
         return await interaction.response.send_message(
             "❌ Accès refusé.", ephemeral=True
         )
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    target_month_str = datetime.now().strftime("%Y-%m")
+
+    if month:
+        try:
+            # Gestion format MM-YYYY
+            if "-" in month:
+                parts = month.split("-")
+                # Format MM-YYYY
+                if len(parts[0]) == 2 and len(parts[1]) == 4:
+                    target_month_str = f"{parts[1]}-{parts[0]}"
+                # Format YYYY-MM
+                elif len(parts[0]) == 4 and len(parts[1]) == 2:
+                    target_month_str = month
+                else:
+                    raise ValueError
+            else:
+                raise ValueError
+        except:
+            return await interaction.response.send_message(
+                "❌ Format de date invalide. Utilisez MM-YYYY (exemple: 10-2024).",
+                ephemeral=True,
+            )
+
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
-    # On récupère les commandes COMPLETED du jour pour le calcul précis
-    # On filtre sur 'created_at' qui contient la date. LIKE '2023-12-08%'
+    # On récupère les commandes COMPLETED du mois cible
     cursor.execute(
         "SELECT price, cost, service FROM orders WHERE status='COMPLETED' AND created_at LIKE ?",
-        (f"{today}%",),
+        (f"{target_month_str}%",),
     )
     rows = cursor.fetchall()
     conn.close()
@@ -780,7 +848,6 @@ async def stats(interaction: discord.Interaction):
 
     for price, cost, service in rows:
         total_sales += price
-
         if cost:
             # Si c'est un compte Telegram stocké, le coût est déjà net en Euro
             if service == "Telegram Account":
@@ -791,25 +858,25 @@ async def stats(interaction: discord.Interaction):
 
     profit = total_sales - total_cost
 
-    profit = total_sales - total_cost
-
-    embed = discord.Embed(title=f"📊 Statistiques du {today}", color=0xFFD700)
+    embed = discord.Embed(title=f"📊 Statistiques : {target_month_str}", color=0xFFD700)
     embed.add_field(name="Ventes Totales", value=f"{total_sales:.2f}€", inline=True)
-    embed.add_field(name="Coût Estimé (API)", value=f"{total_cost:.2f}€", inline=True)
+    embed.add_field(name="Coût Estimé", value=f"{total_cost:.2f}€", inline=True)
     embed.add_field(name="Bénéfice Net", value=f"{profit:.2f}€", inline=False)
-    embed.set_footer(text=f"{len(rows)} commandes terminées aujourd'hui.")
+    embed.set_footer(text=f"{len(rows)} commandes en {target_month_str}.")
 
-    view = StatsView(today)
+    view = StatsView(target_month_str)
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 class StatsView(discord.ui.View):
-    def __init__(self, date_str):
+    def __init__(self, month_str):
         super().__init__(timeout=60)
-        self.date_str = date_str
+        self.month_str = month_str
 
     @discord.ui.button(
-        label="📜 Voir détails", style=discord.ButtonStyle.secondary, emoji="🔎"
+        label="📅 Voir détails par jour",
+        style=discord.ButtonStyle.secondary,
+        emoji="🔎",
     )
     async def details_btn(
         self, interaction: discord.Interaction, button: discord.ui.Button
@@ -819,43 +886,61 @@ class StatsView(discord.ui.View):
         conn = sqlite3.connect("database.db")
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT order_id, discord_id, service, price, status, created_at FROM orders WHERE created_at LIKE ? ORDER BY created_at DESC",
-            (f"{self.date_str}%",),
+            "SELECT price, cost, service, created_at FROM orders WHERE status='COMPLETED' AND created_at LIKE ? ORDER BY created_at ASC",
+            (f"{self.month_str}%",),
         )
         rows = cursor.fetchall()
         conn.close()
 
         if not rows:
             return await interaction.followup.send(
-                "❌ Aucune commande trouvée pour cette date.", ephemeral=True
+                "❌ Aucune commande trouvée pour ce mois.", ephemeral=True
             )
 
-        # Construction du rapport
-        lines = [f"**Commandes du {self.date_str}**"]
-        for row in rows:
-            oid, uid, svc, price, status, created = row
-            # Format heure
+        # Regroupement par jour
+        daily_stats = {}
+
+        for price, cost, service, created_at in rows:
+            # created_at format assumed to be "%Y-%m-%d %H:%M:%S"
             try:
-                dt = datetime.strptime(created, "%Y-%m-%d %H:%M:%S")
-                time_str = dt.strftime("%H:%M")
+                day_key = created_at.split(" ")[0]  # YYYY-MM-DD
             except:
-                time_str = "??"
+                continue
 
-            icon = "✅" if status == "COMPLETED" else "⏳" if status == "PENDING" else "❌"
-            username = f"<@{uid}>"
-            
+            if day_key not in daily_stats:
+                daily_stats[day_key] = {"sales": 0.0, "cost": 0.0, "count": 0}
+
+            daily_stats[day_key]["sales"] += price
+            daily_stats[day_key]["count"] += 1
+
+            if cost:
+                if service == "Telegram Account":
+                    daily_stats[day_key]["cost"] += cost
+                else:
+                    daily_stats[day_key]["cost"] += cost * 1.3 * 0.9
+
+        # Génération du rapport
+        lines = [f"**Détails journaliers pour {self.month_str}**"]
+
+        sorted_days = sorted(daily_stats.keys())
+
+        for day in sorted_days:
+            data = daily_stats[day]
+            profit = data["sales"] - data["cost"]
+            day_num = day.split("-")[-1]
             lines.append(
-                f"`{time_str}` {icon} **{svc}** | `{oid}` | {price}€ | {username}"
+                f"`{day_num}` : Ventes **{data['sales']:.2f}€** | Bénéfice **{profit:.2f}€** ({data['count']} cmds)"
             )
 
-        # Gestion de la longueur du message
         full_text = "\n".join(lines)
+
         if len(full_text) > 4000:
             import io
+
             file_data = io.BytesIO(full_text.encode("utf-8"))
             await interaction.followup.send(
-                content="📄 Rapport trop long, voir fichier :",
-                file=discord.File(file_data, filename=f"stats_{self.date_str}.txt"),
+                content="📄 Rapport journalier trop long :",
+                file=discord.File(file_data, filename=f"stats_{self.month_str}.txt"),
                 ephemeral=True,
             )
         else:
@@ -2231,18 +2316,20 @@ class TelegramAccountView(discord.ui.View):
         result = await TelethonHandler.get_login_code(self.session_string)
 
         if result["success"]:
-            msg_response = "✅ **Voici les codes trouvés (du plus récent au plus vieux) :**\n\n"
-            
+            msg_response = (
+                "✅ **Voici les codes trouvés (du plus récent au plus vieux) :**\n\n"
+            )
+
             for i, item in enumerate(result["codes"]):
-                age = item['age']
+                age = item["age"]
                 age_str = f"{age}s"
-                if age > 300: # 5 minutes
+                if age > 300:  # 5 minutes
                     age_str += " ⚠️ (Expiré ?)"
                 elif i == 0:
                     age_str += " ✨ (Le + récent)"
 
                 msg_response += f"🔹 **Code:** `{item['code']}` | 🕓 Il y a {age_str}\n"
-            
+
             # On ajoute le message complet du tout dernier code pour vérif
             last_msg = result["codes"][0]["message"]
             msg_response += f"\n📄 **Dernier Message Telegram :**\n||{last_msg}||"
@@ -2301,6 +2388,78 @@ async def stock(interaction: discord.Interaction):
 
 
 @bot.tree.command(
+    name="check_account",
+    description="Vérifier l'état d'un compte (Admin uniquement)",
+)
+async def check_account(interaction: discord.Interaction, phone: str):
+    if not is_user_admin(interaction.user.id):
+        return await interaction.response.send_message(
+            "❌ Accès refusé.", ephemeral=True
+        )
+
+    await interaction.response.defer(ephemeral=True)
+
+    # Recherche en DB
+    conn = sqlite3.connect("database.db")
+    row = conn.execute(
+        "SELECT id, session_string, password_2fa FROM telegram_accounts WHERE phone=?",
+        (phone,),
+    ).fetchone()
+    conn.close()
+
+    if not row:
+        return await interaction.followup.send(
+            f"❌ Aucun compte trouvé avec le numéro {phone}.", ephemeral=True
+        )
+
+    acc_id, session, pwd_db = row
+
+    await interaction.followup.send(f"🔍 Analyse du compte {phone} en cours...")
+
+    # Verification Telethon
+    result = await TelethonHandler.check_2fa_status(session)
+
+    if not result["success"]:
+        return await interaction.followup.send(
+            f"❌ Erreur connexion Telethon : {result.get('error')}", ephemeral=True
+        )
+
+    has_2fa_real = result["has_2fa"]
+    username = result.get("username", "Aucun")
+
+    embed = discord.Embed(title=f"Diagnostic {phone}", color=0xFFA500)
+    embed.add_field(name="Session", value="✅ Active", inline=True)
+    embed.add_field(
+        name="2FA (Réel)",
+        value="🔒 ACTIF" if has_2fa_real else "🔓 INACTIF",
+        inline=True,
+    )
+    embed.add_field(
+        name="2FA (Database)", value=f"`{pwd_db}`" if pwd_db else "❌ NULL", inline=True
+    )
+    embed.add_field(
+        name="Infos",
+        value=f"User: {username}\nName: {result.get('first_name')}",
+        inline=False,
+    )
+
+    if has_2fa_real and not pwd_db:
+        embed.add_field(
+            name="⚠️ PROBLÈME",
+            value="Le compte a un 2FA activé mais nous n'avons PAS le mot de passe en base.",
+            inline=False,
+        )
+    elif not has_2fa_real and pwd_db:
+        embed.add_field(
+            name="⚠️ Bizarre",
+            value="Nous avons un mdp 2FA en base mais le compte n'en a pas besoin.",
+            inline=False,
+        )
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(
     name="myaccounts",
     description="Voir mes comptes Telegram achetés (et recevoir le code)",
 )
@@ -2344,7 +2503,9 @@ async def myaccounts(interaction: discord.Interaction, user: discord.Member = No
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     # Message de fin
-    await interaction.followup.send(f"✅ Voici les comptes récents de {target_name}.", ephemeral=True)
+    await interaction.followup.send(
+        f"✅ Voici les comptes récents de {target_name}.", ephemeral=True
+    )
 
 
 class ClearStockView(discord.ui.View):

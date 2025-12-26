@@ -7,6 +7,7 @@ import shutil
 from datetime import datetime
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.tl.functions.account import GetPasswordRequest
 from dotenv import load_dotenv
 
 # Charger la config
@@ -62,7 +63,13 @@ async def process_file(file_path, cost):
                     api_id = data["app_id"]
                 if data.get("app_hash"):
                     api_hash = data["app_hash"]
-                password = data.get("twoFA")  # Peut être null
+
+                # Tentative de récupération du mot de passe avec plusieurs clés possibles
+                password = (
+                    data.get("twoFA")
+                    or data.get("password")
+                    or data.get("cloud_password")
+                )
         except Exception as e:
             print(f"⚠️ Erreur lecture JSON pour {phone_raw}: {e}")
 
@@ -80,7 +87,25 @@ async def process_file(file_path, cost):
         if not await client.is_user_authorized():
             print(f"❌ {phone_raw} : Session invalide ou déconnectée.")
             await client.disconnect()
+            await client.disconnect()
             return False
+
+        # Vérification réelle du 2FA sur le compte
+        try:
+            password_status = await client(GetPasswordRequest())
+            has_2fa_real = password_status.has_password
+
+            if has_2fa_real and not password:
+                print(
+                    f"⚠️ ATTENTION : {phone_raw} a un 2FA actif mais AUCUN mot de passe dans le JSON !"
+                )
+            elif not has_2fa_real and password:
+                print(
+                    f"⚠️ Info : {phone_raw} a un mot de passe dans le JSON mais le 2FA semble inactif."
+                )
+
+        except Exception as exc_2fa:
+            print(f"⚠️ Impossible de vérifier le statut 2FA pour {phone_raw}: {exc_2fa}")
 
         # Conversion en StringSession
         string_session = StringSession.save(client.session)
