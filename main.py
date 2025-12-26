@@ -2236,6 +2236,18 @@ class ConfirmAccountBuyView(discord.ui.View):
         update_balance(self.user_id, -self.price)
         mark_telegram_account_sold(self.account_id, self.user_id)
 
+        # Alert Stock Bas
+        remaining_stock = count_telegram_stock()
+        if remaining_stock < 10:
+            for admin_id in ADMIN_IDS:
+                try:
+                    admin_user = await interaction.client.fetch_user(admin_id)
+                    await admin_user.send(
+                        f"⚠️ **Alerte Stock** : Il ne reste que **{remaining_stock}** comptes Telegram en stock !"
+                    )
+                except:
+                    pass
+
         # Historique
         conn = sqlite3.connect("database.db")
         conn.execute(
